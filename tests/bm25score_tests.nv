@@ -1,0 +1,263 @@
+// bm25score_tests.nv — the published properties of the formula, and
+// the refusal that stops a stale table being used.
+//
+// RED ON PURPOSE.
+//
+// The normative sources are Robertson and Zaragoza, "The
+// Probabilistic Relevance Framework: BM25 and Beyond", Foundations
+// and Trends in Information Retrieval 3(4), 2009, § 3.2 for Okapi
+// BM25 and its IDF; Lv and Zhai, "Lower-Bounding Term Frequency
+// Normalization to Improve BM25", CIKM 2011, for BM25+; and Lv and
+// Zhai, "When Documents Are Very Long, BM25 Fails!", SIGIR 2011, for
+// BM25L.
+//
+// The assertions here are the PROPERTIES those papers state, not
+// transcribed decimals: a property holds for every implementation of
+// the formula, and a decimal only holds for one rounding.  The
+// reference implementation's own decimal is asserted in
+// bm25query_tests.nv, where the whole worked example is.
+
+use std.test
+use bm25error
+use bm25index
+use bm25params
+use bm25score
+
+@test
+fn test_b_is_the_length_normalisation_and_at_zero_length_stops_mattering() [io]
+    // § 3.2: `b = 0` removes the document length from the formula
+    // entirely, `b = 1` divides the term frequency fully by the
+    // document's length relative to the average.
+    let short_and_long = [["a"], ["a", "x", "x", "x", "x", "x", "x", "x", "x"]]
+
+    test.case("at b = 0 a short and a long document with the same count score alike")
+    let p0 = bm25params.with_b(bm25params.defaults(), 0.0)
+    match bm25index.build(short_and_long)
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, p0, 0, "a")
+                Err(_) => test.fail("document 0 of two exists")
+                Ok(s0) =>
+                    match bm25score.term_score(ix, p0, 1, "a")
+                        Err(_) => test.fail("document 1 of two exists")
+                        Ok(s1) => test.assert(s0 == s1)
+
+    test.case("at b = 0.75 the longer document scores strictly less")
+    match bm25index.build(short_and_long)
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, bm25params.defaults(), 0, "a")
+                Err(_) => test.fail("document 0 of two exists")
+                Ok(s0) =>
+                    match bm25score.term_score(ix, bm25params.defaults(), 1, "a")
+                        Err(_) => test.fail("document 1 of two exists")
+                        Ok(s1) => test.assert(s1 < s0)
+
+@test
+fn test_k1_is_the_saturation_and_at_zero_the_count_stops_mattering() [io]
+    // § 3.2: at `k1 = 0` the term frequency component is the same for
+    // every document that contains the term at all — binary
+    // weighting.  As `k1` grows the component approaches the raw
+    // count.
+    let once_and_thrice = [["a", "x", "x"], ["a", "a", "a"]]
+
+    test.case("at k1 = 0 one occurrence and three score alike")
+    let p = bm25params.with_k1(bm25params.with_b(bm25params.defaults(), 0.0), 0.0)
+    match bm25index.build(once_and_thrice)
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, p, 0, "a")
+                Err(_) => test.fail("document 0 of two exists")
+                Ok(s0) =>
+                    match bm25score.term_score(ix, p, 1, "a")
+                        Err(_) => test.fail("document 1 of two exists")
+                        Ok(s1) => test.assert(s0 == s1)
+
+    test.case("at k1 = 1.2 three occurrences are worth more than one")
+    let q = bm25params.with_b(bm25params.defaults(), 0.0)
+    match bm25index.build(once_and_thrice)
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, q, 0, "a")
+                Err(_) => test.fail("document 0 of two exists")
+                Ok(s0) =>
+                    match bm25score.term_score(ix, q, 1, "a")
+                        Err(_) => test.fail("document 1 of two exists")
+                        Ok(s1) => test.assert(s1 > s0)
+
+    test.case("but not three times as much — the saturation is the point")
+    match bm25index.build(once_and_thrice)
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, q, 0, "a")
+                Err(_) => test.fail("document 0 of two exists")
+                Ok(s0) =>
+                    match bm25score.term_score(ix, q, 1, "a")
+                        Err(_) => test.fail("document 1 of two exists")
+                        Ok(s1) => test.assert(s1 < 3.0 * s0)
+
+@test
+fn test_the_robertson_idf_goes_negative_and_the_default_one_does_not() [io]
+    // § 3.2's IDF is `log((N - n + 0.5) / (n + 0.5))`, which is below
+    // zero once a term is in more than half the documents.  A
+    // document containing such a term then scores BELOW a document
+    // that does not contain it at all, because a document without it
+    // contributes exactly zero.  This is the defect the default IDF
+    // exists to avoid, and it is published rather than hidden.
+    let common = [["a", "z"], ["a", "y"], ["a", "x"], ["w", "v"]]
+
+    test.case("a term in three documents of four has a negative Robertson IDF")
+    let r = bm25params.with_idf(bm25params.defaults(), Bm25IdfRobertson)
+    match bm25index.build(common)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) => test.assert(bm25score.idf(ix, r, "a") < 0.0)
+
+    test.case("so a document containing it scores below one that does not")
+    match bm25index.build(common)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            match bm25score.score(ix, r, 0, ["a"])
+                Err(_)  => test.fail("document 0 of four exists")
+                Ok(has) =>
+                    match bm25score.score(ix, r, 3, ["a"])
+                        Err(_)      => test.fail("document 3 of four exists")
+                        Ok(has_not) =>
+                            test.assert(has < has_not)
+                            test.assert(has_not == 0.0)
+
+    test.case("the default Lucene IDF is positive for the same term")
+    match bm25index.build(common)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) => test.assert(bm25score.idf(ix, bm25params.defaults(), "a") > 0.0)
+
+    test.case("and rank_bm25's floor lifts it above zero instead of fixing it")
+    let f = bm25params.rank_bm25_defaults()
+    match bm25index.build(common)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) => test.assert(bm25score.idf(ix, f, "a") > 0.0)
+
+@test
+fn test_bm25_plus_bounds_a_matched_term_below_and_okapi_does_not() [io]
+    // Lv and Zhai, CIKM 2011: the contribution of a term the document
+    // contains tends to zero as the document grows, so a very long
+    // document that matches can be beaten by a short one that matches
+    // less.  BM25+ adds `delta` outside the saturation, so the
+    // contribution is never less than `delta` times the IDF.
+    let long_doc = [["a", "q", "q", "q", "q", "q", "q", "q", "q", "q",
+                     "q", "q", "q", "q", "q", "q", "q", "q", "q", "q"],
+                    ["b"], ["b"], ["b"]]
+
+    test.case("under Okapi the long document's contribution is small")
+    match bm25index.build(long_doc)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, bm25params.defaults(), 0, "a")
+                Err(_) => test.fail("document 0 of four exists")
+                Ok(s)  =>
+                    test.assert(s > 0.0)
+                    test.assert(s < bm25score.idf(ix, bm25params.defaults(), "a"))
+
+    test.case("under BM25+ it is at least delta times the IDF")
+    let plus = bm25params.defaults_for(Bm25Plus)
+    match bm25index.build(long_doc)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, plus, 0, "a")
+                Err(_) => test.fail("document 0 of four exists")
+                Ok(s)  => test.assert(s >= plus.delta * bm25score.idf(ix, plus, "a"))
+
+    test.case("and BM25+ scores the same document strictly above Okapi")
+    match bm25index.build(long_doc)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, bm25params.defaults(), 0, "a")
+                Err(_)    => test.fail("document 0 of four exists")
+                Ok(okapi) =>
+                    match bm25score.term_score(ix, plus, 0, "a")
+                        Err(_) => test.fail("document 0 of four exists")
+                        Ok(p)  => test.assert(p > okapi)
+
+    test.case("BM25L shifts inside the saturation, so it lifts less than BM25+")
+    let bl = bm25params.defaults_for(Bm25L)
+    test.assert(bl.delta == 0.5)
+    match bm25index.build(long_doc)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, bl, 0, "a")
+                Err(_) => test.fail("document 0 of four exists")
+                Ok(l)  =>
+                    match bm25score.term_score(ix, bm25params.defaults(), 0, "a")
+                        Err(_)    => test.fail("document 0 of four exists")
+                        Ok(okapi) =>
+                            test.assert(l > okapi)
+                            test.assert(l < bm25score.idf(ix, bl, "a") * (bl.k1 + 1.0))
+
+@test
+fn test_a_table_built_before_an_add_is_refused_rather_than_used() [io]
+    // The whole reason `generation` is published.  Adding a document
+    // changes the corpus size, the average length and one document
+    // frequency per added term, so EVERY entry of a table built
+    // before the add is wrong — and wrong quietly, because the
+    // numbers stay plausible and the ranking stays sorted.
+    test.case("a table over an unchanged index is current and scores")
+    match bm25index.build([["a", "b"], ["b", "c"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            test.assert(bm25score.table_is_current(t, ix))
+            test.assert(bm25score.table_generation(t) == 0)
+            match bm25score.score_with(t, ix, 1, ["c"])
+                Err(_) => test.fail("a current table scores a document it holds")
+                Ok(s)  => test.assert(s > 0.0)
+
+    test.case("after an add the same table is not current")
+    match bm25index.build([["a", "b"], ["b", "c"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            let ix2 = bm25index.add(ix, ["c", "d"])
+            test.assert(bm25score.table_is_current(t, ix2) == false)
+
+    test.case("and using it is Bm25StaleIdfTable, not a wrong number")
+    match bm25index.build([["a", "b"], ["b", "c"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            let ix2 = bm25index.add(ix, ["c", "d"])
+            match bm25score.score_with(t, ix2, 1, ["c"])
+                Ok(_)  => test.fail("a table from before the add has every IDF wrong")
+                Err(e) =>
+                    test.assert(bm25error.code(e) == "stale-idf-table")
+                    test.assert(bm25error.is_setup_fault(e) == false)
+
+    test.case("the table computed without one gives the same score")
+    match bm25index.build([["a", "b"], ["b", "c"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            match bm25score.score_with(t, ix, 1, ["c"])
+                Err(_)         => test.fail("a current table scores a document it holds")
+                Ok(with_table) =>
+                    match bm25score.score(ix, bm25params.defaults(), 1, ["c"])
+                        Err(_)      => test.fail("document 1 of two exists")
+                        Ok(without) => test.assert(with_table == without)
+
+@test
+fn test_a_document_index_outside_the_corpus_is_refused() [io]
+    test.case("score names the document and the count")
+    match bm25index.build([["a"], ["b"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.score(ix, bm25params.defaults(), 5, ["a"])
+                Ok(_)  => test.fail("there is no document 5 in a corpus of two")
+                Err(e) =>
+                    test.assert(bm25error.code(e) == "doc-out-of-range")
+                    test.assert(str.len(bm25error.message(e)) > 0)
+
+    test.case("and so does term_score")
+    match bm25index.build([["a"], ["b"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, bm25params.defaults(), 5, "a")
+                Ok(_)  => test.fail("there is no document 5 in a corpus of two")
+                Err(e) => test.assert(bm25error.code(e) == "doc-out-of-range")

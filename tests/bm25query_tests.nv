@@ -1,0 +1,179 @@
+// bm25query_tests.nv — `rank_bm25`'s own worked example, and the
+// total order the whole ranking rests on.
+//
+// RED ON PURPOSE.
+//
+// The vector is the one on `rank_bm25`'s front page: the three
+// documents "Hello there good man!", "It is quite windy in London"
+// and "How is the weather today?", each split on spaces, the query
+// "windy London" split the same way, and `BM25Okapi`'s answer
+//
+//     array([0.        , 0.93729472, 0.        ])
+//
+// with `get_top_n(..., n=1)` returning the second document.  That
+// number is produced by `rank_bm25`'s OWN constructor defaults —
+// `k1 = 1.5`, `b = 0.75`, the Robertson IDF with its floor and
+// `epsilon = 0.25` — which are not this package's defaults, so the
+// test asks for `bm25params.rank_bm25_defaults()` by name.  Working
+// it through by hand: the document lengths are 4, 6 and 5, so the
+// average is 5; `windy` and `London` are each in one document of
+// three, so each has IDF `ln(2.5 / 1.5) = 0.51083`, above zero and
+// therefore not floored; the saturation is
+// `2.5 / (1 + 1.5 * (0.25 + 0.75 * 6 / 5)) = 0.91743`; and two terms
+// at `0.51083 * 0.91743` sum to `0.93730`.
+
+use std.test
+use bm25hit
+use bm25index
+use bm25params
+use bm25query
+
+// `rank_bm25`'s documented corpus, split on spaces as its README
+// splits it.
+fn rank_bm25_corpus() -> [[Str]]
+    [["Hello", "there", "good", "man!"],
+     ["It", "is", "quite", "windy", "in", "London"],
+     ["How", "is", "the", "weather", "today?"]]
+
+@test
+fn test_the_rank_bm25_worked_example() [io]
+    test.case("the scores are 0, 0.93729472 and 0, in document order")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let s = bm25query.score_all(ix, bm25params.rank_bm25_defaults(),
+                                        ["windy", "London"])
+            test.assert(list.len(s) == 3)
+            test.assert(s[0] == 0.0)
+            test.assert(s[2] == 0.0)
+            test.assert(s[1] > 0.9372)
+            test.assert(s[1] < 0.9374)
+
+    test.case("and the top document is the one that contains both terms")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.top_k(ix, bm25params.rank_bm25_defaults(),
+                                       ["windy", "London"], 1)
+            test.assert(list.len(hits) == 1)
+            test.assert(hits[0].doc == 1)
+
+    test.case("best answers the same document")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            match bm25query.best(ix, bm25params.rank_bm25_defaults(),
+                                 ["windy", "London"])
+                None    => test.fail("an index is never empty")
+                Some(h) => test.assert(h.doc == 1)
+
+    test.case("a term in only one document still ranks that document first")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.rank(ix, bm25params.rank_bm25_defaults(), ["weather"])
+            test.assert(hits[0].doc == 2)
+
+@test
+fn test_a_ranking_holds_every_document_and_is_sorted_by_score() [io]
+    test.case("rank answers the whole corpus, zeros included")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.rank(ix, bm25params.defaults(), ["windy"])
+            test.assert(list.len(hits) == 3)
+            test.assert(hits[0].doc == 1)
+            test.assert(hits[1].score == 0.0)
+            test.assert(hits[2].score == 0.0)
+
+    test.case("score_all is in document order and rank is not")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let s = bm25query.score_all(ix, bm25params.defaults(), ["windy"])
+            let hits = bm25query.rank(ix, bm25params.defaults(), ["windy"])
+            test.assert(s[1] == hits[0].score)
+
+    test.case("a document's position in the ranking is readable")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.rank(ix, bm25params.defaults(), ["windy"])
+            match bm25hit.rank_of(hits, 1)
+                None    => test.fail("every document is in a ranking")
+                Some(r) => test.assert(r == 0)
+
+@test
+fn test_the_order_is_total_so_two_runs_agree() [io]
+    // Ties are ordinary: a one-term query over equal-length documents
+    // gives every matching document the same score.  The tie-break is
+    // the document index ascending, so the list is the same every
+    // time and a test may assert the whole of it.
+    let tied = [["z"], ["a"], ["a"], ["a"]]
+
+    test.case("equal scores come out in document index order")
+    match bm25index.build(tied)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.rank(ix, bm25params.defaults(), ["a"])
+            test.assert(hits[0].doc == 1)
+            test.assert(hits[1].doc == 2)
+            test.assert(hits[2].doc == 3)
+            test.assert(hits[3].doc == 0)
+
+    test.case("so the cut top_k makes is fixed rather than whatever the sort did")
+    match bm25index.build(tied)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.top_k(ix, bm25params.defaults(), ["a"], 2)
+            test.assert(list.len(hits) == 2)
+            test.assert(hits[0].doc == 1)
+            test.assert(hits[1].doc == 2)
+
+    test.case("a k above the corpus size answers the corpus, not a padded list")
+    match bm25index.build(tied)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) => test.assert(list.len(bm25query.top_k(ix, bm25params.defaults(), ["a"], 99)) == 4)
+
+    test.case("a k of zero answers an empty list rather than a refusal")
+    match bm25index.build(tied)
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) => test.assert(list.len(bm25query.top_k(ix, bm25params.defaults(), ["a"], 0)) == 0)
+
+@test
+fn test_a_query_the_corpus_cannot_match_is_reported_rather_than_scored() [io]
+    // The most common way a BM25 integration is wrong: the query was
+    // tokenised differently from the corpus, every score is zero, and
+    // `top_k` answers the first k documents of the corpus in index
+    // order — a result set that is sorted, plausible and meaningless.
+    test.case("the query the README splits, against a lower-cased corpus")
+    match bm25index.build([["it", "is", "quite", "windy", "in", "london"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let unknown = bm25query.unknown_terms(ix, ["windy", "London"])
+            test.assert(list.len(unknown) == 1)
+            test.assert(unknown[0] == "London")
+
+    test.case("a query of entirely unknown terms scores every document zero")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let s = bm25query.score_all(ix, bm25params.defaults(), ["zebra", "quasar"])
+            test.assert(s[0] == 0.0)
+            test.assert(s[1] == 0.0)
+            test.assert(s[2] == 0.0)
+
+    test.case("and top_k still answers a full, sorted, meaningless list")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let hits = bm25query.top_k(ix, bm25params.defaults(), ["zebra", "quasar"], 2)
+            test.assert(list.len(hits) == 2)
+            test.assert(hits[0].doc == 0)
+            test.assert(hits[1].doc == 1)
+            test.assert(list.len(bm25query.unknown_terms(ix, ["zebra", "quasar"])) == 2)
+
+    test.case("a term the corpus does hold is not reported")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) => test.assert(list.len(bm25query.unknown_terms(ix, ["windy"])) == 0)

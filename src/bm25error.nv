@@ -1,0 +1,117 @@
+// bm25error.nv — every way a corpus, a parameter set or a score can
+// be refused, and which of them a start-up check would have caught.
+//
+// FOUR REFUSALS, AND WHY EACH IS A VALUE RATHER THAN A PANIC OR A NAN
+//
+// Three of these are things the reference implementations do not
+// report at all.  `rank_bm25` divides by the average document length
+// without checking that there is one, so an empty corpus is a
+// `ZeroDivisionError` from inside a list comprehension.  It reads
+// `k1` and `b` straight out of the constructor without looking at
+// them, so `b = 2.0` is a length normalisation that runs, answers
+// numbers, and ranks nothing usefully.  And it has no notion at all
+// of an index that has changed since a score was computed, because
+// its index cannot change.
+//
+// A panic in a library is a crash in somebody else's program, and a
+// nan is worse: nan compares false against everything, so a nan score
+// sinks to wherever the sort happens to put it and the ranking comes
+// out subtly wrong with nothing in any log.  Each of the four
+// conditions here is something a caller can be told about and can
+// fix, so each is an arm of one enum and every entry point that can
+// meet one answers a `Result`.
+//
+// `Bm25StaleIdfTable` is the one that matters most, and it is the
+// reason this module exists rather than a `Str`.  Adding a document
+// changes the corpus size, the average document length and the
+// document frequency of every term in it — so EVERY inverse document
+// frequency changes, not only the new document's, and every score
+// computed from a table built before the add is wrong.  The table
+// records the generation of the index it was built from, the index
+// counts its generations, and a mismatch is this refusal with both
+// numbers named.
+
+// Why a corpus could not be indexed, a parameter set could not be
+// used, or a score could not be computed.
+//
+// ```novo
+// use bm25error
+//
+// fn main() [io]
+//     println(bm25error.message(Bm25EmptyCorpus))
+// ```
+pub enum Bm25Error
+    // `build` was handed a corpus of no documents.  Every quantity
+    // BM25 is made of is undefined over an empty corpus: the average
+    // document length is a division by zero, and the inverse document
+    // frequency of every term is the logarithm of a ratio whose
+    // numerator and denominator are both fixed by a corpus size of
+    // nought.  An index that cannot be built is better news than an
+    // index that answers a nan for every query.
+    Bm25EmptyCorpus
+    // A parameter is outside the range its formula is defined over.
+    // `name` is the field — `"k1"`, `"b"`, `"delta"`, `"epsilon"` —
+    // and `value` is what was in it.  See `bm25params.check`, which
+    // is how a program meets this at start-up rather than on the
+    // first query.
+    Bm25ParamOutOfRange(name: Str, value: Float)
+    // An inverse document frequency table was built from an earlier
+    // generation of the index it is being used with.  `table_at` is
+    // the generation the table was built from and `index_at` is the
+    // generation of the index handed in.  Every score the stale table
+    // would produce is wrong, and wrong quietly: the numbers are the
+    // right shape and the ranking is plausible.
+    Bm25StaleIdfTable(table_at: Int, index_at: Int)
+    // A document index is not one this index holds.  `doc` is what
+    // was asked for and `count` is how many documents there are, so
+    // the valid range is `0` to `count - 1`.  A caller that kept a
+    // document index across a rebuild meets this.
+    Bm25DocOutOfRange(doc: Int, count: Int)
+
+// The refusal as a sentence, ending without a full stop, suitable for
+// a log line or an error message the caller composes.
+//
+// ```novo
+// use bm25error
+//
+// fn main() [io]
+//     println(bm25error.message(Bm25ParamOutOfRange("b", 2.0)))
+// ```
+pub fn message(e: Bm25Error) -> Str []
+    todo("bm25-nv.bm25error.message")
+
+// A short stable identifier for the refusal: `"empty-corpus"`,
+// `"param-out-of-range"`, `"stale-idf-table"`,
+// `"doc-out-of-range"`.
+//
+// Stable across releases, so a caller may branch on it and a test may
+// assert it.
+//
+// ```novo
+// use bm25error
+//
+// fn main() [io]
+//     println(bm25error.code(Bm25EmptyCorpus))        // empty-corpus
+// ```
+pub fn code(e: Bm25Error) -> Str []
+    todo("bm25-nv.bm25error.code")
+
+// Whether the refusal is a fault in the corpus or the configuration
+// rather than in the call that met it.
+//
+// True for `Bm25EmptyCorpus` and `Bm25ParamOutOfRange`, which are
+// both decided before any query is scored and are therefore worth
+// reporting when a program starts.  False for the other two, which
+// depend on which index and which document a particular call was
+// given.
+//
+// ```novo
+// use bm25error
+//
+// fn main() [io]
+//     println("${bm25error.is_setup_fault(Bm25EmptyCorpus)}")         // true
+//     let e = Bm25StaleIdfTable(0, 1)
+//     println("${bm25error.is_setup_fault(e)}")                       // false
+// ```
+pub fn is_setup_fault(e: Bm25Error) -> Bool []
+    todo("bm25-nv.bm25error.is_setup_fault")

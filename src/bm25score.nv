@@ -1,0 +1,265 @@
+// bm25score.nv — the formula itself, and the table that makes it
+// affordable.
+//
+// THE THREE VARIANTS ARE ONE SHAPE WITH TWO KNOBS
+//
+// Every score in this package is a sum over the query's terms of
+// `idf(term) * saturate(tf, dl)`.  The IDF is `bm25params.Bm25Idf`'s
+// business and does not vary with the variant.  The saturation is
+// where the three differ, and only there:
+//
+//     let c = tf / (1 - b + b * dl / avgdl)
+//
+//     Bm25Okapi   (c * (k1 + 1)) / (c + k1)
+//     Bm25Plus    (c * (k1 + 1)) / (c + k1)  +  delta
+//     Bm25L       ((c + delta) * (k1 + 1)) / ((c + delta) + k1)
+//
+// BM25+ adds the shift OUTSIDE the saturation, so a matched term is
+// worth at least `delta * idf` however long the document is.  BM25L
+// adds it INSIDE, so the shift is itself saturated and a term that
+// already occurs often is moved much less.  That is the whole
+// difference between Lv and Zhai's two papers, and it is why `delta`
+// is `1.0` in one and `0.5` in the other.
+//
+// A note on the Okapi line: written as above it is the § 3.2 formula
+// of Robertson and Zaragoza 2009 with the division by the length
+// normalisation moved from the denominator into `c`.  The two are the
+// same number.  It is written this way here because BM25L's shift is
+// applied to `c`, and a reader comparing the three arms should be
+// able to see that one term moved.
+//
+// WHY THE IDF TABLE IS A VALUE, AND WHY IT CARRIES A GENERATION
+//
+// An IDF is a logarithm, and a query of five terms over ten thousand
+// documents would take five logarithms per document — fifty thousand
+// for a ranking that needs five.  So `idf_table` computes them once,
+// and `score_with` and `bm25query.top_k_with` read them.
+//
+// The table also carries the `Bm25Params` it was built from.  That is
+// not a convenience: it makes it impossible to score with a table
+// built for one formula and parameters meant for another, which is
+// the mistake a `score(table, params, ...)` signature invites and
+// which produces numbers that are the right size and mean nothing.
+//
+// And it carries the index generation, because an IDF is a function
+// of the whole corpus.  `bm25index.add` changes the corpus size, the
+// average document length and one document frequency per term in the
+// added document, so every entry in a table built before the add is
+// wrong afterwards.  Nothing about the wrongness is visible: the
+// numbers stay plausible and the ranking stays sorted.  So every
+// function here that takes a table compares its generation with the
+// index's and answers `Bm25StaleIdfTable` on a mismatch, naming both,
+// and `table_is_current` is the same question asked before the call.
+// A caller that added a document rebuilds the table; there is no way
+// to forget and no way to find out late.
+
+use bm25error
+use bm25index
+use bm25params
+
+// The inverse document frequency of every term in a corpus, computed
+// once, with the parameters it was computed under and the generation
+// of the index it was read from.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let t = bm25score.idf_table(ix, bm25params.defaults())
+//             println("${bm25score.table_generation(t)}")        // 0
+// ```
+pub struct Bm25IdfTable
+    // The terms, in the same order as `bm25index.vocabulary`.
+    terms: [Str]
+    // The inverse document frequency of each term, parallel to
+    // `terms`, under `params.idf`.
+    idf: [Float]
+    // The parameters this table was built under.  Carried so that the
+    // scoring functions need no separate parameters argument and the
+    // two cannot disagree.
+    params: bm25params.Bm25Params
+    // The generation of the index this table was read from.  See the
+    // module comment.
+    generation: Int
+
+// Compute the inverse document frequency of every term in the corpus.
+//
+// The formula is `params.idf`'s; under `Bm25IdfFloored` the floor is
+// applied here, which is why it is a property of the table and not of
+// a single term.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let t = bm25score.idf_table(ix, bm25params.defaults())
+//             println("${list.len(t.terms)}")                    // 3
+// ```
+pub fn idf_table(ix: bm25index.Bm25Index, p: bm25params.Bm25Params) -> Bm25IdfTable []
+    todo("bm25-nv.bm25score.idf_table")
+
+// The index generation this table was built from.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let t = bm25score.idf_table(ix, bm25params.defaults())
+//             println("${bm25score.table_generation(t)}")        // 0
+// ```
+pub fn table_generation(t: Bm25IdfTable) -> Int []
+    todo("bm25-nv.bm25score.table_generation")
+
+// Whether a table may still be used with an index.
+//
+// True when the table's generation is the index's.  This is the
+// question `score_with` answers with `Bm25StaleIdfTable`, published
+// so a caller holding a table across an `add` can ask it first and
+// rebuild rather than handle a refusal.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let t = bm25score.idf_table(ix, bm25params.defaults())
+//             let ix2 = bm25index.add(ix, ["b"])
+//             println("${bm25score.table_is_current(t, ix2)}")   // false
+// ```
+pub fn table_is_current(t: Bm25IdfTable, ix: bm25index.Bm25Index) -> Bool []
+    todo("bm25-nv.bm25score.table_is_current")
+
+// The inverse document frequency of one term, under one parameter
+// set.
+//
+// A term the corpus does not contain has a document frequency of
+// zero, which every one of the three formulae is defined at; it is
+// the largest IDF the corpus can produce, and it multiplies a term
+// frequency that is always zero, so it contributes nothing to any
+// score.
+//
+// Under `Bm25IdfFloored` this call computes the floor from the whole
+// corpus, which costs a pass over the vocabulary.  A caller asking
+// for more than one term takes `idf_table`.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25score.idf(ix, bm25params.defaults(), "a")}")
+// ```
+pub fn idf(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, term: Str) -> Float []
+    todo("bm25-nv.bm25score.idf")
+
+// What one term contributes to one document's score.
+//
+// The product of the term's inverse document frequency and the
+// variant's saturation of its frequency in that document.  Published
+// because it is the number that explains a ranking: a caller showing
+// a user why a document came first reads it per term, and a test
+// checking a variant against its paper asserts it directly rather
+// than through a sum.
+//
+// A document index outside the corpus is `Bm25DocOutOfRange`.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             match bm25score.term_score(ix, bm25params.defaults(), 0, "a")
+//                 Ok(s)  => println("${s}")
+//                 Err(_) => println("no such document")
+// ```
+pub fn term_score(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int,
+                  term: Str) -> Result<Float, bm25error.Bm25Error> []
+    todo("bm25-nv.bm25score.term_score")
+
+// One document's score for a query, computing the inverse document
+// frequencies as it goes.
+//
+// The query is a list of terms, tokenised by the caller with the same
+// tokenizer the corpus was.  A term repeated in the query is counted
+// once per occurrence, which is what every reference implementation
+// does and what the 2009 framework paper § 3.2 specifies through the
+// query term frequency.
+//
+// A document index outside the corpus is `Bm25DocOutOfRange`.
+//
+// This is the call for one document.  A caller scoring the whole
+// corpus takes `bm25query.score_all`, and a caller scoring many
+// queries against one corpus takes `idf_table` and `score_with`.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             match bm25score.score(ix, bm25params.defaults(), 1, ["c"])
+//                 Ok(s)  => println("${s}")
+//                 Err(_) => println("no such document")
+// ```
+pub fn score(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int,
+             query: [Str]) -> Result<Float, bm25error.Bm25Error> []
+    todo("bm25-nv.bm25score.score")
+
+// One document's score for a query, reading the inverse document
+// frequencies off a table.
+//
+// The same number `score` answers, without recomputing a logarithm
+// per term.  The parameters come from the table, so there is no way
+// to score with one formula's table and another formula's constants.
+//
+// A table built from an earlier generation of the index is
+// `Bm25StaleIdfTable` with both generations named — see the module
+// comment.  A document index outside the corpus is
+// `Bm25DocOutOfRange`.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let t = bm25score.idf_table(ix, bm25params.defaults())
+//             match bm25score.score_with(t, ix, 1, ["c"])
+//                 Ok(s)  => println("${s}")
+//                 Err(_) => println("the table does not fit this index")
+// ```
+pub fn score_with(t: Bm25IdfTable, ix: bm25index.Bm25Index, doc: Int,
+                  query: [Str]) -> Result<Float, bm25error.Bm25Error> []
+    todo("bm25-nv.bm25score.score_with")

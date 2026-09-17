@@ -1,0 +1,182 @@
+// bm25index_tests.nv — the five numbers BM25 reads off a corpus, and
+// what an `add` does to all of them.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// bm25-nv.<module>.<fn>`.
+//
+// The corpus is `rank_bm25`'s own README example, split on spaces
+// exactly as its `tokenized_corpus` line splits it, so the counts
+// asserted here are the counts the reference implementation holds.
+
+use std.test
+use bm25error
+use bm25index
+
+// `rank_bm25`'s documented corpus, tokenised the way its README
+// tokenises it.  Document lengths 4, 6 and 5, so the average
+// document length is exactly 5.
+fn rank_bm25_corpus() -> [[Str]]
+    [["Hello", "there", "good", "man!"],
+     ["It", "is", "quite", "windy", "in", "London"],
+     ["How", "is", "the", "weather", "today?"]]
+
+@test
+fn test_the_corpus_is_counted_once_and_reads_back() [io]
+    test.case("three documents, and the lengths are the term counts")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            test.assert(bm25index.doc_count(ix) == 3)
+            match bm25index.doc_len(ix, 0)
+                None    => test.fail("document 0 of three exists")
+                Some(n) => test.assert(n == 4)
+            match bm25index.doc_len(ix, 1)
+                None    => test.fail("document 1 of three exists")
+                Some(n) => test.assert(n == 6)
+
+    test.case("the average document length is the total over the count")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            test.assert(bm25index.total_terms(ix) == 15)
+            test.assert(bm25index.avg_doc_len(ix) == 5.0)
+
+    test.case("a document index past the end is None, not a crash")
+    match bm25index.build(rank_bm25_corpus())
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) => test.assert_none(bm25index.doc_len(ix, 7))
+
+@test
+fn test_term_and_document_frequencies_are_what_the_formulae_read() [io]
+    test.case("a repeated term is counted once per occurrence")
+    match bm25index.build([["a", "b", "a"], ["b", "c"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            test.assert(bm25index.term_freq(ix, 0, "a") == 2)
+            test.assert(bm25index.term_freq(ix, 0, "b") == 1)
+
+    test.case("a term the document does not hold is zero, not a refusal")
+    match bm25index.build([["a"], ["b"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) => test.assert(bm25index.term_freq(ix, 0, "b") == 0)
+
+    test.case("the document frequency counts documents, not occurrences")
+    match bm25index.build([["a", "a", "a"], ["a"], ["b"]])
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            test.assert(bm25index.doc_freq(ix, "a") == 2)
+            test.assert(bm25index.doc_freq(ix, "z") == 0)
+            test.assert(bm25index.contains_term(ix, "a"))
+            test.assert(bm25index.contains_term(ix, "z") == false)
+
+    test.case("terms are compared as exact strings — no folding happens here")
+    match bm25index.build([["London"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            test.assert(bm25index.doc_freq(ix, "London") == 1)
+            test.assert(bm25index.doc_freq(ix, "london") == 0)
+
+@test
+fn test_the_vocabulary_is_sorted_so_two_builds_agree() [io]
+    // Sorted rather than first-seen, so the same documents in a
+    // different order give the same list and a test may assert it.
+    test.case("each term once, in sorted order")
+    match bm25index.build([["c", "a"], ["b", "a"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            let v = bm25index.vocabulary(ix)
+            test.assert(list.len(v) == 3)
+            test.assert(v[0] == "a")
+            test.assert(v[1] == "b")
+            test.assert(v[2] == "c")
+
+@test
+fn test_an_empty_corpus_is_refused_and_an_empty_document_is_not() [io]
+    // The division `rank_bm25` does not guard: with no documents the
+    // average document length is a division by zero and every IDF is
+    // undefined.
+    test.case("no documents is Bm25EmptyCorpus, not an index that scores nan")
+    match bm25index.build([])
+        Ok(_)  => test.fail("an index over no documents has no average length")
+        Err(e) =>
+            test.assert(bm25error.code(e) == "empty-corpus")
+            test.assert(bm25error.is_setup_fault(e))
+
+    test.case("a document of no terms is legal and counts towards the average")
+    match bm25index.build([["a", "b", "c", "d"], []])
+        Err(_) => test.fail("an empty document is a legal document")
+        Ok(ix) =>
+            test.assert(bm25index.doc_count(ix) == 2)
+            test.assert(bm25index.avg_doc_len(ix) == 2.0)
+
+@test
+fn test_add_answers_a_new_index_and_moves_every_number_with_it() [io]
+    // The load-bearing fact: an add is not local to the new document.
+    // The corpus size, the average length and one document frequency
+    // per added term all move, so every IDF moves with them.
+    test.case("the original index is unchanged")
+    match bm25index.build([["a", "b"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let ix2 = bm25index.add(ix, ["b", "c", "d", "e"])
+            test.assert(bm25index.doc_count(ix) == 1)
+            test.assert(bm25index.doc_count(ix2) == 2)
+
+    test.case("the average document length moves")
+    match bm25index.build([["a", "b"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            test.assert(bm25index.avg_doc_len(ix) == 2.0)
+            let ix2 = bm25index.add(ix, ["b", "c", "d", "e"])
+            test.assert(bm25index.avg_doc_len(ix2) == 3.0)
+
+    test.case("a term already in the vocabulary gains a document")
+    match bm25index.build([["a", "b"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let ix2 = bm25index.add(ix, ["b", "c"])
+            test.assert(bm25index.doc_freq(ix2, "b") == 2)
+            test.assert(bm25index.doc_freq(ix2, "c") == 1)
+            test.assert(list.len(bm25index.vocabulary(ix2)) == 3)
+
+    test.case("the new document takes the next index")
+    match bm25index.build([["a", "b"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let ix2 = bm25index.add(ix, ["z"])
+            test.assert(bm25index.term_freq(ix2, 1, "z") == 1)
+
+@test
+fn test_the_generation_counts_adds_so_a_cached_table_can_be_refused() [io]
+    // Published rather than private: it is the only thing that can
+    // tell a precomputed IDF table that the corpus underneath it has
+    // changed.
+    test.case("a fresh index is generation zero")
+    match bm25index.build([["a"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) => test.assert(bm25index.generation(ix) == 0)
+
+    test.case("each add is one generation")
+    match bm25index.build([["a"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let ix2 = bm25index.add(bm25index.add(ix, ["b"]), ["c"])
+            test.assert(bm25index.generation(ix2) == 2)
+
+    test.case("add_all counts one generation per document, not one per call")
+    match bm25index.build([["a"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let ix2 = bm25index.add_all(ix, [["b"], ["c"], ["d"]])
+            test.assert(bm25index.doc_count(ix2) == 4)
+            test.assert(bm25index.generation(ix2) == 3)
+
+    test.case("and a batch add is the same index as the adds one at a time")
+    match bm25index.build([["a"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let one = bm25index.add_all(ix, [["b", "c"], ["c"]])
+            let two = bm25index.add(bm25index.add(ix, ["b", "c"]), ["c"])
+            test.assert(bm25index.doc_count(one) == bm25index.doc_count(two))
+            test.assert(bm25index.doc_freq(one, "c") == bm25index.doc_freq(two, "c"))
+            test.assert(bm25index.avg_doc_len(one) == bm25index.avg_doc_len(two))

@@ -1,0 +1,55 @@
+[package]
+name        = "bm25-nv"
+version     = "0.0.1"
+description = "Okapi BM25 ranking over a tokenised corpus the caller supplies: the index is a value holding every document length and term frequency, BM25, BM25+ and BM25L are three settings of one parameters value, the IDF formula is chosen rather than defaulted so that a common term cannot rank a document that contains it below one that does not, every `add` answers a new index whose generation refuses a precomputed IDF table made before it, and a ranking is a total order over score and document index."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Every row is `[]`.  The corpus arrives already tokenised,
+# as a list of lists of terms the caller holds, and every query is an
+# argument; nothing here opens a file, reads a clock, or asks a
+# tokenizer for anything.  A test can therefore rank a whole corpus
+# with no input at all.
+#
+# `core` is not the same as a device claim, and this package makes
+# none.  An IDF is a natural logarithm, `std.math`'s `log` is refused
+# at `@tier(embedded)`, and so is every other float routine it would
+# reach for.  The counting half — `bm25index` — is integer work and
+# would build; the scoring half would not.  The README says so under
+# "Running on a microcontroller" rather than leaving a reader to find
+# out at the link step.
+layer       = "core"
+
+category    = "text"
+
+tags        = ["bm25", "okapi-bm25", "bm25-plus", "bm25l", "ranking", "information-retrieval", "search", "tf-idf", "text"]
+repository  = "https://github.com/novolang/bm25-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Okapi BM25 over a corpus the caller has already tokenised"
+
+[dependencies]
+# None, and that is a decision rather than an omission.  The obvious
+# candidate is tokenizers-nv, because every reference implementation's
+# first example splits a string — and it is refused: the tokenizer
+# decides recall, so a package that shipped one would make two corpora
+# built with different settings silently incomparable while both
+# answered plausible-looking scores.  The corpus arrives as `[[Str]]`
+# and the caller owns that decision.  stats-nv is the second
+# neighbour, for the logarithm; it is refused because the only
+# transcendental BM25 needs is `log`, which `std.math` already
+# provides, and a dependency for one call would put a whole numerics
+# package into the closure of every consumer that wanted to rank forty
+# documents.  The README names the packages a caller wants for the
+# halves this one does not do.

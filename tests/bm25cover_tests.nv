@@ -1,0 +1,154 @@
+// bm25cover_tests.nv — the rest of the public surface: the
+// parameters value a configuration file round-trips through, the
+// start-up check, the hit value and its order, and the precomputed
+// top-k.
+//
+// RED ON PURPOSE.
+
+use std.test
+use bm25error
+use bm25hit
+use bm25index
+use bm25params
+use bm25query
+use bm25score
+
+@test
+fn test_a_parameter_set_is_built_one_field_at_a_time() [io]
+    test.case("the defaults are the 2009 framework paper's k1 and b")
+    let d = bm25params.defaults()
+    test.assert(d.k1 == 1.2)
+    test.assert(d.b == 0.75)
+    test.assert(bm25params.variant_name(d.variant) == "bm25")
+    test.assert(bm25params.idf_name(d.idf) == "lucene")
+
+    test.case("the variant carries its own published delta")
+    test.assert(bm25params.defaults_for(Bm25Plus).delta == 1.0)
+    test.assert(bm25params.defaults_for(Bm25L).delta == 0.5)
+    test.assert(bm25params.variant_name(bm25params.defaults_for(Bm25L).variant) == "bm25l")
+
+    test.case("with_variant carries the delta across rather than guessing a new one")
+    let p = bm25params.with_variant(bm25params.defaults_for(Bm25Plus), Bm25L)
+    test.assert(p.delta == 1.0)
+    test.assert(bm25params.variant_name(p.variant) == "bm25l")
+
+    test.case("delta and epsilon are set the same way as the rest")
+    test.assert(bm25params.with_delta(bm25params.defaults(), 0.25).delta == 0.25)
+    test.assert(bm25params.with_epsilon(bm25params.defaults(), 0.5).epsilon == 0.5)
+
+    test.case("rank_bm25's own defaults are not this package's")
+    let r = bm25params.rank_bm25_defaults()
+    test.assert(r.k1 == 1.5)
+    test.assert(r.epsilon == 0.25)
+    test.assert(bm25params.idf_name(r.idf) == "floored")
+
+@test
+fn test_the_names_a_configuration_file_uses_round_trip() [io]
+    // An unknown name is None rather than the default: a misspelled
+    // variant that silently became plain BM25 is a configuration file
+    // that lies about what the program is doing.
+    test.case("every variant name reads back")
+    match bm25params.variant_named("bm25+")
+        None    => test.fail("bm25+ is one of the three names")
+        Some(v) => test.assert(bm25params.variant_name(v) == "bm25+")
+
+    test.case("every IDF name reads back")
+    match bm25params.idf_named("robertson")
+        None    => test.fail("robertson is one of the three names")
+        Some(i) => test.assert(bm25params.idf_name(i) == "robertson")
+
+    test.case("an unknown variant is None")
+    test.assert_none(bm25params.variant_named("okapi"))
+
+    test.case("an unknown IDF is None")
+    test.assert_none(bm25params.idf_named("bm25f"))
+
+@test
+fn test_check_reports_an_unusable_parameter_set_before_the_first_query() [io]
+    // `rank_bm25` reads k1 and b straight out of its constructor
+    // without looking at them, so `b = 2.0` is a length normalisation
+    // that runs, answers numbers and ranks nothing usefully.
+    test.case("the defaults pass")
+    match bm25params.check(bm25params.defaults())
+        Err(_) => test.fail("the defaults are inside every range")
+        Ok(p)  => test.assert(p.k1 == 1.2)
+
+    test.case("b above one is refused, naming the field and the value")
+    match bm25params.check(bm25params.with_b(bm25params.defaults(), 2.0))
+        Ok(_)  => test.fail("b is a fraction of the length normalisation")
+        Err(e) =>
+            test.assert(bm25error.code(e) == "param-out-of-range")
+            test.assert(bm25error.is_setup_fault(e))
+            test.assert(str.len(bm25error.message(e)) > 0)
+
+    test.case("b below zero is refused too")
+    match bm25params.check(bm25params.with_b(bm25params.defaults(), -0.5))
+        Ok(_)  => test.fail("a negative length normalisation is not defined")
+        Err(e) => test.assert(bm25error.code(e) == "param-out-of-range")
+
+    test.case("a negative k1 is refused, and zero is not")
+    match bm25params.check(bm25params.with_k1(bm25params.defaults(), -1.0))
+        Ok(_)  => test.fail("a negative saturation constant is not defined")
+        Err(e) => test.assert(bm25error.code(e) == "param-out-of-range")
+    match bm25params.check(bm25params.with_k1(bm25params.defaults(), 0.0))
+        Err(_) => test.fail("k1 = 0 is binary weighting, which is meaningful")
+        Ok(p)  => test.assert(p.k1 == 0.0)
+
+    test.case("a negative delta and a negative epsilon are refused")
+    match bm25params.check(bm25params.with_delta(bm25params.defaults(), -1.0))
+        Ok(_)  => test.fail("a negative lower bound is not a lower bound")
+        Err(e) => test.assert(bm25error.code(e) == "param-out-of-range")
+    match bm25params.check(bm25params.with_epsilon(bm25params.defaults(), -1.0))
+        Ok(_)  => test.fail("a negative floor multiplier is not defined")
+        Err(e) => test.assert(bm25error.code(e) == "param-out-of-range")
+
+@test
+fn test_a_hit_is_two_numbers_and_the_order_over_them_is_total() [io]
+    test.case("a hit value is built from its two numbers")
+    let h = bm25hit.hit(2, 0.9372)
+    test.assert(h.doc == 2)
+    test.assert(h.score == 0.9372)
+
+    test.case("the higher score ranks first")
+    test.assert(bm25hit.compare(bm25hit.hit(0, 2.0), bm25hit.hit(1, 1.0)) < 0)
+    test.assert(bm25hit.compare(bm25hit.hit(0, 1.0), bm25hit.hit(1, 2.0)) > 0)
+
+    test.case("an equal score breaks on the document index, ascending")
+    test.assert(bm25hit.compare(bm25hit.hit(0, 1.0), bm25hit.hit(1, 1.0)) < 0)
+    test.assert(bm25hit.compare(bm25hit.hit(3, 1.0), bm25hit.hit(1, 1.0)) > 0)
+
+    test.case("and a hit compares equal to itself")
+    test.assert(bm25hit.compare(bm25hit.hit(1, 1.0), bm25hit.hit(1, 1.0)) == 0)
+
+    test.case("a document not in the list has no rank")
+    test.assert_none(bm25hit.rank_of([bm25hit.hit(3, 2.0)], 1))
+
+@test
+fn test_the_precomputed_top_k_answers_what_the_plain_one_does() [io]
+    let corpus = [["a", "b"], ["b", "c"], ["c", "d"]]
+
+    test.case("the same documents in the same order")
+    match bm25index.build(corpus)
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            match bm25query.top_k_with(t, ix, ["c"], 2)
+                Err(_)   => test.fail("a current table ranks the index it came from")
+                Ok(hits) =>
+                    let plain = bm25query.top_k(ix, bm25params.defaults(), ["c"], 2)
+                    test.assert(list.len(hits) == 2)
+                    test.assert(hits[0].doc == plain[0].doc)
+                    test.assert(hits[1].doc == plain[1].doc)
+                    test.assert(hits[0].score == plain[0].score)
+
+    test.case("and a table from before an add is refused, naming both generations")
+    match bm25index.build(corpus)
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            let ix2 = bm25index.add(ix, ["c", "e"])
+            match bm25query.top_k_with(t, ix2, ["c"], 2)
+                Ok(_)  => test.fail("an add changes every IDF in the table")
+                Err(e) =>
+                    test.assert(bm25error.code(e) == "stale-idf-table")
+                    test.assert(str.len(bm25error.message(e)) > 0)

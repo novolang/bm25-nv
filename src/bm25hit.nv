@@ -1,0 +1,112 @@
+// bm25hit.nv — a ranked result is a document index and a score, and
+// the order over them is TOTAL.
+//
+// WHY THE HIT DOES NOT CARRY THE DOCUMENT
+//
+// A ranking over ten thousand documents produces ten thousand of
+// these, and the caller wants forty of them.  A hit that carried the
+// document's terms would copy the whole corpus to answer a query.  So
+// a hit is two numbers, and the caller looks the document up in
+// whatever it holds them in — a database row, a file path, the list
+// it tokenised in the first place.  The document index is the
+// caller's own: it is the position in the corpus handed to
+// `bm25index.build`, and `bm25index.add` appends, so an index stays
+// valid as documents arrive.
+//
+// THE ORDER IS TOTAL, AND THAT IS THE POINT
+//
+// Two documents with the same score are ordinary — a one-term query
+// over a corpus of equal-length documents gives every matching
+// document the same score, and a query whose terms are all unknown
+// gives every document zero.  A comparison that only looked at the
+// score would leave their relative order to whatever the sort
+// happened to do, which means two runs of the same program over the
+// same corpus can disagree about which document is first.
+//
+// That is not a theoretical complaint.  It is what makes a ranked
+// list untestable, it is what makes a paginated result set drop and
+// repeat rows between pages, and in a picker it is what opens a
+// different file than the one under the cursor when the list
+// repaints.  So `compare` breaks the tie on the document index,
+// ascending, and the order is total: one input, one output, every
+// time.
+//
+// Scores are `Float` and are compared as floats.  There is no
+// tolerance and no rounding: two scores that differ in the last bit
+// are two different scores, and the tie-break does not run.  A caller
+// that wants a tolerance groups the list itself, where the tolerance
+// is a number a reader can see.
+
+// One ranked result: which document, and what it scored.
+//
+// ```novo
+// use bm25hit
+//
+// fn main() [io]
+//     let h = bm25hit.hit(2, 0.9372)
+//     println("${h.doc} ${h.score}")                   // 2 0.9372
+// ```
+pub struct Bm25Hit
+    // The document's position in the corpus handed to
+    // `bm25index.build`, counting from zero.
+    doc: Int
+    // What the document scored for the query.  Zero for a document
+    // that contains none of the query's terms, and zero is a real
+    // answer rather than a missing one — see
+    // `bm25query.unknown_terms`.
+    score: Float
+
+// A hit value.
+//
+// The constructor exists because a struct declared in one module
+// cannot be written as a literal in another, and because a test wants
+// to state the hit it expects.
+//
+// ```novo
+// use bm25hit
+//
+// fn main() [io]
+//     println("${bm25hit.hit(1, 2.5).doc}")            // 1
+// ```
+pub fn hit(doc: Int, score: Float) -> Bm25Hit []
+    todo("bm25-nv.bm25hit.hit")
+
+// Order two hits for a ranking: negative when `a` ranks first, zero
+// when they are the same hit, positive when `b` ranks first.
+//
+// By score DESCENDING, then by document index ASCENDING.  The higher
+// score ranks first, which is the direction a ranking is read in; the
+// tie-break makes the order total, which is what lets two runs agree
+// and a test assert a whole list.  See the module comment for what
+// goes wrong without it.
+//
+// ```novo
+// use bm25hit
+//
+// fn main() [io]
+//     println("${bm25hit.compare(bm25hit.hit(0, 2.0), bm25hit.hit(1, 1.0))}")
+//     println("${bm25hit.compare(bm25hit.hit(0, 1.0), bm25hit.hit(1, 1.0))}")
+// ```
+pub fn compare(a: Bm25Hit, b: Bm25Hit) -> Int []
+    todo("bm25-nv.bm25hit.compare")
+
+// Where a document appears in a ranked list, counting from zero, or
+// `None` when the list does not hold it.
+//
+// This is the number a retrieval evaluation is made of: reciprocal
+// rank, precision at k and every other measure is a function of where
+// the known-relevant document landed.  It is here rather than in the
+// caller because the list is already in `compare`'s order and a
+// caller writing the search itself would have to know that.
+//
+// ```novo
+// use bm25hit
+//
+// fn main() [io]
+//     let hits = [bm25hit.hit(3, 2.0), bm25hit.hit(1, 1.0)]
+//     match bm25hit.rank_of(hits, 1)
+//         Some(r) => println("${r}")                   // 1
+//         None    => println("not in the list")
+// ```
+pub fn rank_of(hits: [Bm25Hit], doc: Int) -> ?Int []
+    todo("bm25-nv.bm25hit.rank_of")

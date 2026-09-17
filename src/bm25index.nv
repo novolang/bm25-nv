@@ -1,0 +1,337 @@
+// bm25index.nv — the corpus, counted once, as a value.
+//
+// WHAT AN INDEX IS, AND WHAT IT IS NOT
+//
+// BM25 reads exactly five things off a corpus: how many documents
+// there are, how long each one is, how often each term occurs in each
+// document, how many documents each term occurs in, and the average
+// document length.  This value holds those five and nothing else.  It
+// does not hold the original text, it does not hold a tokenizer's
+// configuration, and it does not hold the scores of anything.
+//
+// The postings are stored FORWARD, by document: `post_start` slices
+// `post_term` and `post_freq` into one run per document, and each run
+// names the vocabulary indices that document contains and how many
+// times.  That is the direction `bm25query.score_all` walks, and it
+// is the direction `rank_bm25` walks too — every query touches every
+// document, so ranking costs the whole corpus however short the
+// query.  An INVERTED index, term to document list, is what turns
+// that into a cost proportional to the postings of the query's terms,
+// and it is not here; the README names it as missing rather than
+// leaving a reader to discover the complexity from a profile.
+//
+// THE CALLER SUPPLIES THE TOKENS
+//
+// The corpus is `[[Str]]`: a list of documents, each a list of terms
+// already split out.  There is no tokenizer in this package and there
+// will not be one.
+//
+// The reason is that the tokenizer decides recall, and it decides it
+// invisibly.  Case folding, stemming, stop-word removal, whether
+// `don't` is one term or two, whether a number is a term at all —
+// each of those changes which documents can be found at all, and none
+// of them shows up in a score.  A package that shipped a tokenizer
+// would be shipping a default for all of that, and two corpora built
+// by two callers who took two different defaults would produce scores
+// that look comparable, sort against each other, and are not.  Terms
+// here are compared as exact strings, so the caller's tokenizer is
+// the whole of the answer to "why did this document not match", and
+// it is somewhere the caller can look.
+//
+// `add` ANSWERS A NEW INDEX, AND THAT IS NOT FREE
+//
+// The index is immutable, so `add` answers a new one.  What it
+// changes is not only the new document: the corpus size grows, the
+// average document length moves, and the document frequency of every
+// term in the added document goes up by one.  An inverse document
+// frequency is a function of the corpus size and a document
+// frequency, so EVERY term's IDF changes, and the length
+// normalisation of EVERY document changes with the average.  A score
+// computed before the add is not merely missing a document — it is a
+// different number from the one the same call would answer now, and
+// the two cannot be compared or merged.
+//
+// A precomputed IDF table is therefore wrong after an add, and wrong
+// in the way that does not announce itself: the numbers stay the
+// right size and the ranking stays plausible.  So an index counts its
+// generations, `add` increments the count, `bm25score.idf_table`
+// records the generation it read, and every entry point that takes a
+// table checks the two and answers `Bm25StaleIdfTable` when they
+// disagree.  That is the interface stopping it being silent, and it
+// is the reason `generation` is published rather than kept private.
+
+use bm25error
+
+// A tokenised corpus with everything BM25 reads off it counted once.
+//
+// The fields are the counted tables.  They are public because a value
+// with no readable fields cannot be tested, and a caller reads them
+// through the functions below rather than directly.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c", "d"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.doc_count(ix)}")        // 2
+// ```
+pub struct Bm25Index
+    // Every distinct term in the corpus, each once, in sorted order.
+    // A posting names a term by its index into this list.
+    terms: [Str]
+    // How many documents contain each term, parallel to `terms`.
+    // This is the `n` of the IDF formulae.
+    doc_freq: [Int]
+    // How many terms each document holds, counting repeats.  This is
+    // the `dl` of the length normalisation.
+    lengths: [Int]
+    // The sum of `lengths`.  Held rather than recomputed because the
+    // average document length is read once per document per query.
+    total_length: Int
+    // Where each document's postings begin in `post_term` and
+    // `post_freq`.  One entry longer than `lengths`: document `d`'s
+    // postings are the half-open range
+    // `[post_start[d], post_start[d + 1])`.
+    post_start: [Int]
+    // The vocabulary index of each posting, all documents
+    // concatenated.
+    post_term: [Int]
+    // The number of occurrences of each posting, parallel to
+    // `post_term`.  This is the `tf` of the saturation formula.
+    post_freq: [Int]
+    // How many times this index has been added to.  Zero for an index
+    // straight out of `build`, one more for each `add`.  See the
+    // module comment: this is what makes a stale IDF table a refusal
+    // instead of a wrong answer.
+    generation: Int
+
+// Count a tokenised corpus into an index.
+//
+// The corpus is a list of documents, each a list of terms.  Terms are
+// compared as exact strings; nothing here folds case, stems or drops
+// a stop word.
+//
+// An empty corpus is `Bm25EmptyCorpus`, because every quantity BM25
+// is made of is undefined over one.  A corpus of empty documents is
+// NOT refused: a document of no terms is a legal document that scores
+// zero for every query, and it counts towards the corpus size and
+// drags the average document length down, both of which are correct.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     let corpus = [["hello", "there", "good", "man"],
+//                   ["it", "is", "quite", "windy", "in", "london"],
+//                   ["how", "is", "the", "weather", "today"]]
+//     match bm25index.build(corpus)
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.avg_doc_len(ix)}")      // 5.0
+// ```
+pub fn build(corpus: [[Str]]) -> Result<Bm25Index, bm25error.Bm25Error> []
+    todo("bm25-nv.bm25index.build")
+
+// The index with one more document, as a new value.
+//
+// The document is appended, so it takes the next document index and
+// every existing index is unchanged.  The generation goes up by one,
+// which invalidates every IDF table built from this index — see the
+// module comment for why that is not only the new document's problem.
+//
+// Adding cannot fail: an index that exists is non-empty, and any list
+// of terms including the empty one is a legal document.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let ix2 = bm25index.add(ix, ["b", "c"])
+//             println("${bm25index.doc_count(ix2)} ${bm25index.generation(ix2)}")
+// ```
+pub fn add(ix: Bm25Index, doc: [Str]) -> Bm25Index []
+    todo("bm25-nv.bm25index.add")
+
+// The index with several more documents, as a new value.
+//
+// The same result as `add` called once per document, and the
+// generation goes up by one for each, so a caller that added ten
+// documents and one that added one can be told apart.  It is a
+// separate call because rebuilding the vocabulary once for a batch is
+// the difference between a bulk load that finishes and one that does
+// not.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let ix2 = bm25index.add_all(ix, [["b"], ["c"]])
+//             println("${bm25index.doc_count(ix2)}")             // 3
+// ```
+pub fn add_all(ix: Bm25Index, docs: [[Str]]) -> Bm25Index []
+    todo("bm25-nv.bm25index.add_all")
+
+// How many documents the index holds.
+//
+// The `N` of the IDF formulae, and one past the largest valid
+// document index.  Never zero.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a"], ["b"], ["c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.doc_count(ix)}")        // 3
+// ```
+pub fn doc_count(ix: Bm25Index) -> Int []
+    todo("bm25-nv.bm25index.doc_count")
+
+// How many terms a document holds, counting repeats, or `None` when
+// the document index is out of range.
+//
+// The `dl` of the length normalisation.  `None` rather than a refusal
+// because a caller walking a list of document indices from somewhere
+// else wants to skip the ones that are not here, not to stop.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "a", "b"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             match bm25index.doc_len(ix, 0)
+//                 Some(n) => println("${n}")                     // 3
+//                 None    => println("no such document")
+// ```
+pub fn doc_len(ix: Bm25Index, doc: Int) -> ?Int []
+    todo("bm25-nv.bm25index.doc_len")
+
+// The average number of terms per document.
+//
+// The `avgdl` of the length normalisation: the total term count
+// divided by the document count.  It moves on every `add`, which is
+// half of why a score computed before an add cannot be compared with
+// one computed after.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["c", "d", "e", "f"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.avg_doc_len(ix)}")      // 3.0
+// ```
+pub fn avg_doc_len(ix: Bm25Index) -> Float []
+    todo("bm25-nv.bm25index.avg_doc_len")
+
+// How many times a term occurs in a document.
+//
+// The `tf` of the saturation formula.  Zero for a term the document
+// does not contain and zero for a document index out of range, which
+// are the same answer because they have the same consequence for a
+// score: no contribution.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b", "a"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.term_freq(ix, 0, "a")}")  // 2
+// ```
+pub fn term_freq(ix: Bm25Index, doc: Int, term: Str) -> Int []
+    todo("bm25-nv.bm25index.term_freq")
+
+// How many documents contain a term at least once.
+//
+// The `n` of the IDF formulae.  Zero for a term the corpus does not
+// contain at all, which is what `bm25query.unknown_terms` is built
+// on.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.doc_freq(ix, "b")}")    // 2
+// ```
+pub fn doc_freq(ix: Bm25Index, term: Str) -> Int []
+    todo("bm25-nv.bm25index.doc_freq")
+
+// Whether any document contains a term.
+//
+// `doc_freq` above zero, as a predicate, because that is how it is
+// nearly always read.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.contains_term(ix, "z")}")   // false
+// ```
+pub fn contains_term(ix: Bm25Index, term: Str) -> Bool []
+    todo("bm25-nv.bm25index.contains_term")
+
+// Every distinct term in the corpus, in sorted order.
+//
+// Sorted rather than in first-seen order, so that two indexes built
+// from the same documents in a different order have the same
+// vocabulary list and a test may assert the whole of it.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["b", "a"], ["a"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${list.len(bm25index.vocabulary(ix))}")  // 2
+// ```
+pub fn vocabulary(ix: Bm25Index) -> [Str] []
+    todo("bm25-nv.bm25index.vocabulary")
+
+// How many term occurrences the whole corpus holds, counting repeats.
+//
+// The sum of every document length, and the numerator of the average.
+// A caller sizing a deployment reads it beside `doc_count`: the
+// postings the index holds are bounded by it.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a", "a"], ["b"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.total_terms(ix)}")      // 3
+// ```
+pub fn total_terms(ix: Bm25Index) -> Int []
+    todo("bm25-nv.bm25index.total_terms")
+
+// How many times this index has been added to.
+//
+// Zero straight out of `build`.  An IDF table carries the generation
+// it was built from, and a table whose generation is not this one is
+// refused rather than used — see the module comment.  A caller that
+// caches scores of its own keys them on this number for the same
+// reason.
+//
+// ```novo
+// use bm25index
+//
+// fn main() [io]
+//     match bm25index.build([["a"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) => println("${bm25index.generation(ix)}")       // 0
+// ```
+pub fn generation(ix: Bm25Index) -> Int []
+    todo("bm25-nv.bm25index.generation")

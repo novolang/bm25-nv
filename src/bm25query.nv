@@ -1,0 +1,199 @@
+// bm25query.nv — scoring a whole corpus against a query, and taking
+// the top of it.
+//
+// FOUR SHAPES, AND WHO TAKES WHICH
+//
+// `score_all` answers one score per document, in document order, with
+// no sorting at all.  It is what a caller wants when the scores are
+// going into a column, a blend with another ranker, or a threshold
+// test.
+//
+// `rank` sorts them.  `top_k` sorts them and cuts, which is what a
+// search box does; it is a separate call because a ranking over ten
+// thousand documents that only forty rows will show does not need the
+// other nine thousand nine hundred and sixty in order, and an
+// implementation is free to use a bounded heap.  `best` is `top_k`
+// with `k = 1`, answering an option, for the caller that wants the
+// single nearest match and would otherwise index into a list that may
+// be empty.
+//
+// `top_k_with` is `top_k` over a precomputed `Bm25IdfTable`, for the
+// caller running many queries against one corpus.  It is the only one
+// of the four that answers a `Result`, because a table can be stale
+// and the other three cannot be — they read the index in front of
+// them.  See bm25score's module comment.
+//
+// THE ZERO SCORE IS AN ANSWER, AND IT IS THE TRAP
+//
+// A query whose terms the corpus does not contain scores every
+// document zero.  `rank` then answers every document, in document
+// index order, because the tie-break is the document index — a list
+// that is sorted, complete, plausible, and carries no information at
+// all.  `top_k` cuts it to the first `k` documents of the corpus,
+// which looks exactly like a result.
+//
+// That is the single most common way a BM25 integration is wrong in
+// production, and it is usually a tokenizer disagreement: the corpus
+// was indexed lower-cased and the query was not, or the corpus was
+// stemmed and the query was not.  No score can report it, because
+// zero is also the honest score of a document that simply does not
+// match.  So `unknown_terms` is published, it is cheap, and the
+// README names checking it as a rule rather than a suggestion.
+
+use bm25error
+use bm25hit
+use bm25index
+use bm25params
+use bm25score
+
+// Every document's score for a query, in document index order.
+//
+// The list is `bm25index.doc_count` long and position `d` is
+// document `d`'s score, so a caller may zip it against anything else
+// it holds per document without sorting.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25query
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let s = bm25query.score_all(ix, bm25params.defaults(), ["c"])
+//             println("${list.len(s)}")                          // 2
+// ```
+pub fn score_all(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> [Float] []
+    todo("bm25-nv.bm25query.score_all")
+
+// Every document, ranked.
+//
+// The whole corpus, in `bm25hit.compare`'s order: score descending,
+// then document index ascending.  Every document appears, including
+// the ones that scored zero, because a ranking that dropped them
+// would make the length of the answer depend on the query and a
+// caller paginating would have to ask how many there were.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25query
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let hits = bm25query.rank(ix, bm25params.defaults(), ["c"])
+//             println("${hits[0].doc}")                          // 1
+// ```
+pub fn rank(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> [bm25hit.Bm25Hit] []
+    todo("bm25-nv.bm25query.rank")
+
+// The `k` highest-ranked documents.
+//
+// The first `k` of `rank`'s answer, and exactly that: the order is
+// total, so the boundary between the `k`th and the `k + 1`th document
+// is fixed and two runs cut in the same place.  A `k` larger than the
+// corpus answers the whole corpus; a `k` of zero or below answers an
+// empty list rather than a refusal, because a caller computing `k`
+// from a window height will produce one when the window is closed.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25query
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"], ["c", "d"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let hits = bm25query.top_k(ix, bm25params.defaults(), ["c"], 2)
+//             println("${list.len(hits)}")                       // 2
+// ```
+pub fn top_k(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str],
+             k: Int) -> [bm25hit.Bm25Hit] []
+    todo("bm25-nv.bm25query.top_k")
+
+// The `k` highest-ranked documents, reading the inverse document
+// frequencies off a table.
+//
+// The same answer `top_k` gives, without recomputing a logarithm per
+// term.  The parameters come from the table.
+//
+// A table built from an earlier generation of the index is
+// `Bm25StaleIdfTable` with both generations named: adding a document
+// changes every IDF, so a table from before the add would rank this
+// query by the wrong numbers and nothing in the answer would say so.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25query
+// use bm25score
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let t = bm25score.idf_table(ix, bm25params.defaults())
+//             match bm25query.top_k_with(t, ix, ["c"], 1)
+//                 Ok(hits) => println("${hits[0].doc}")          // 1
+//                 Err(_)   => println("the table does not fit this index")
+// ```
+pub fn top_k_with(t: bm25score.Bm25IdfTable, ix: bm25index.Bm25Index, query: [Str],
+                  k: Int) -> Result<[bm25hit.Bm25Hit], bm25error.Bm25Error> []
+    todo("bm25-nv.bm25query.top_k_with")
+
+// The single highest-ranked document, or `None` when the corpus is
+// empty.
+//
+// An index is never empty, so this is `Some` for every index this
+// package can produce; the option is there because the signature
+// promises one document and a caller should not have to index into a
+// list to get it.  A best hit whose score is zero is a corpus that
+// matched nothing — see `unknown_terms`.
+//
+// ```novo
+// use bm25index
+// use bm25params
+// use bm25query
+//
+// fn main() [io]
+//     match bm25index.build([["a", "b"], ["b", "c"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             match bm25query.best(ix, bm25params.defaults(), ["c"])
+//                 Some(h) => println("${h.doc}")                 // 1
+//                 None    => println("nothing to rank")
+// ```
+pub fn best(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> ?bm25hit.Bm25Hit []
+    todo("bm25-nv.bm25query.best")
+
+// The query's terms that no document in the corpus contains, in the
+// order they appear in the query, each once.
+//
+// A term in this list contributes nothing to any score, so a query
+// whose terms are ALL in it ranks the whole corpus at zero and
+// `top_k` answers the first `k` documents of the corpus in index
+// order — a result set that is sorted, plausible and meaningless.
+// The usual cause is that the query was tokenised differently from
+// the corpus, which no score can report because zero is also the
+// honest score of a document that does not match.
+//
+// Cheap: one document frequency lookup per query term, and no
+// scoring.
+//
+// ```novo
+// use bm25index
+// use bm25query
+//
+// fn main() [io]
+//     match bm25index.build([["windy", "london"]])
+//         Err(_) => println("the corpus cannot be indexed")
+//         Ok(ix) =>
+//             let u = bm25query.unknown_terms(ix, ["Windy", "London"])
+//             println("${list.len(u)}")                          // 2
+// ```
+pub fn unknown_terms(ix: bm25index.Bm25Index, query: [Str]) -> [Str] []
+    todo("bm25-nv.bm25query.unknown_terms")

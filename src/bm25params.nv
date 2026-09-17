@@ -1,0 +1,403 @@
+// bm25params.nv — the scoring function as a VALUE: which of the three
+// BM25 family members, which inverse document frequency, and the four
+// numbers they read.
+//
+// THE VARIANT IS A FIELD OF THE PARAMETERS, NOT AN ARGUMENT TO THE
+// SCORER
+//
+// BM25, BM25+ and BM25L differ only in two places: how the term
+// frequency saturates, and how a long document is penalised.  That
+// makes "pass the variant to `score`" look reasonable, and it is the
+// wrong shape for three reasons, in increasing order of how much they
+// cost.
+//
+// First, the numbers do not survive the change.  `delta` is read by
+// BM25+ and by BM25L and means a different quantity in each — an
+// additive floor under the whole normalised term frequency in one, a
+// shift applied before saturation in the other — and it is not read
+// at all by plain Okapi.  A variant passed at the call site leaves
+// `delta` sitting in a value that may have been tuned for a formula
+// this call is not using, and nothing says so.  With the variant in
+// the same value, `defaults_for` hands out the paper's own number for
+// the formula it belongs to and a reviewer reads both on one line.
+//
+// Second, the inverse document frequency is not independent of the
+// variant.  Lv and Zhai's lower bound is only a lower bound when the
+// IDF is positive: with the Robertson–Sparck Jones formula a common
+// term has a NEGATIVE IDF, and adding `delta` to a term frequency
+// multiplied by a negative number pushes the score DOWN.  So the
+// variant and the IDF have to be chosen together, and a type that
+// holds one and not the other is a type that lets them disagree.
+//
+// Third, and this is the one a user actually meets: a ranking is a
+// comparison, and two scores computed with different formulae are not
+// comparable.  If the variant were an argument, a loop that scored
+// document 0 under Okapi and document 1 under BM25+ would compile,
+// run, and produce a sorted list that means nothing.  With the
+// variant in the value the scorer reads, one ranking is one formula
+// by construction, and `bm25score.idf_table` — which is built from a
+// `Bm25Params` and carries it — makes that true for the precomputed
+// path too.
+//
+// THE IDF IS CHOSEN, NOT DEFAULTED SILENTLY
+//
+// Robertson and Zaragoza, "The Probabilistic Relevance Framework:
+// BM25 and Beyond", 2009, § 3.2, give the IDF as
+//
+//     log((N - n + 0.5) / (n + 0.5))
+//
+// where `N` is the number of documents and `n` the number containing
+// the term.  For `n > N / 2` that ratio is below one and the
+// logarithm is NEGATIVE.  The consequence is not academic: a document
+// that contains a common term then scores BELOW a document that does
+// not contain it at all, because a document without the term
+// contributes exactly zero and this one contributes a negative
+// number.  On a small corpus — a mailbox, a directory of notes, the
+// forty rows a picker is showing — half the vocabulary is above that
+// threshold and the effect is the whole ranking.
+//
+// `rank_bm25` papers over it with a floor: any IDF at or below zero
+// is replaced by `epsilon` times the average of the positive ones,
+// with `epsilon = 0.25`.  That is a real, shipped, widely copied
+// behaviour and a port has to be able to reproduce it, so it is here
+// as `Bm25IdfFloored`.  It is not the default, because the number it
+// substitutes is not a property of the term and two terms with very
+// different document frequencies come out with the same IDF.
+//
+// The default is `Bm25IdfLucene`, `log(1 + (N - n + 0.5)/(n + 0.5))`,
+// which is what Lucene's `BM25Similarity` has computed since 2015.
+// It is positive for every `n` in range, it needs no tuning constant,
+// and it agrees with the 2009 formula to within a fraction of a
+// percent wherever that formula is positive.  Choosing it is the
+// decision this package publishes rather than hides; a caller
+// reproducing published retrieval numbers asks for
+// `Bm25IdfRobertson` and gets the negative branch, exactly as the
+// paper wrote it.
+
+use bm25error
+
+// Which member of the BM25 family a score is computed with.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println(bm25params.variant_name(Bm25Plus))       // bm25+
+// ```
+pub enum Bm25Variant
+    // Okapi BM25 as Robertson and Zaragoza give it in § 3.2 of the
+    // 2009 framework paper: the term frequency saturates as
+    // `tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / avgdl))`.  The
+    // baseline every other arm is a correction to, and the formula
+    // `rank_bm25`'s `BM25Okapi` computes.  `delta` is not read.
+    Bm25Okapi
+    // BM25+, from Lv and Zhai, "Lower-Bounding Term Frequency
+    // Normalization to Improve BM25", CIKM 2011.  The same saturation
+    // with `delta` added to it, so the contribution of a term the
+    // document contains is never smaller than `delta` times the IDF,
+    // however long the document is.  Without that floor the length
+    // normalisation drives a matched term's contribution towards zero
+    // as the document grows, and a long document that contains every
+    // query term can rank below a short one that contains fewer.
+    // `delta = 1.0` is the paper's recommendation.
+    Bm25Plus
+    // BM25L, from Lv and Zhai, "When Documents Are Very Long, BM25
+    // Fails!", SIGIR 2011.  The shift goes INSIDE the saturation
+    // rather than outside it: the length-normalised term frequency
+    // has `delta` added to it before saturating, so the correction is
+    // itself saturated and a very large term frequency is not moved
+    // as far as BM25+ moves it.  `delta = 0.5` is the paper's
+    // recommendation, and it is a different quantity from BM25+'s
+    // `delta` despite the shared name and the shared field.
+    Bm25L
+
+// Which inverse document frequency formula a score is computed with.
+//
+// See the module comment for why this is a published choice and not a
+// constant buried in the scorer.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println(bm25params.idf_name(Bm25IdfLucene))      // lucene
+// ```
+pub enum Bm25Idf
+    // `log(1 + (N - n + 0.5) / (n + 0.5))`, Lucene's
+    // `BM25Similarity`.  Positive for every document frequency
+    // between one and `N`, so a term the document contains never
+    // subtracts from its score.  The default, and the only arm under
+    // which BM25+'s lower bound is genuinely a lower bound.
+    Bm25IdfLucene
+    // `log((N - n + 0.5) / (n + 0.5))`, the Robertson–Sparck Jones
+    // formula of the 2009 framework paper § 3.2, negative branch
+    // included.  A term in more than half the documents has a
+    // negative IDF under this arm.  It is here because an experiment
+    // reproducing published retrieval results needs the formula the
+    // results were produced with, not a better one.
+    Bm25IdfRobertson
+    // The Robertson–Sparck Jones formula with `rank_bm25`'s floor:
+    // any IDF at or below zero is replaced by `epsilon` times the
+    // mean of the IDFs that came out positive.  Reproduces
+    // `rank_bm25`'s `BM25Okapi` numbers, which is what it is for.
+    // Note that the substituted value depends on the whole corpus
+    // and not on the term, so two terms of very different frequency
+    // both land on it.
+    Bm25IdfFloored
+
+// A complete scoring function: the variant, the IDF, and the four
+// numbers they read.
+//
+// A value rather than a pile of arguments, so a program that scores
+// several corpora the same way states the shape once, a reviewer
+// reads the whole formula in one place, and `bm25score.idf_table` can
+// carry it — which is what makes a precomputed table impossible to
+// use with the parameters it was not built for.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     let p = bm25params.defaults()
+//     println("${p.k1} ${p.b}")                        // 1.2 0.75
+// ```
+pub struct Bm25Params
+    // Which member of the family.  See `Bm25Variant`.
+    variant: Bm25Variant
+    // Which inverse document frequency.  See `Bm25Idf`.
+    idf: Bm25Idf
+    // The term frequency saturation constant of § 3.2.  At `k1 = 0`
+    // the term frequency component is the same for every document
+    // that contains the term at all, which is binary weighting; as
+    // `k1` grows the component approaches the raw count.  The
+    // literature's useful range is `1.2` to `2.0`.  Must not be
+    // negative.
+    k1: Float
+    // The document length normalisation constant of § 3.2.  At
+    // `b = 0` the length of a document does not affect its score at
+    // all; at `b = 1` the term frequency is fully divided by the
+    // document's length relative to the average.  Must be between
+    // `0.0` and `1.0` inclusive; `0.75` is the value both papers and
+    // both reference implementations use.
+    b: Float
+    // The lower bound BM25+ adds and the shift BM25L applies.  Read
+    // by neither under `Bm25Okapi`.  Must not be negative.  See
+    // `defaults_for`, which hands out each paper's own value.
+    delta: Float
+    // `rank_bm25`'s floor multiplier, read only under
+    // `Bm25IdfFloored`.  Must not be negative.  `0.25` is
+    // `rank_bm25`'s own default and there is no argument in the
+    // literature for any particular value.
+    epsilon: Float
+
+// The default parameters: Okapi BM25, the Lucene IDF, `k1 = 1.2`,
+// `b = 0.75`, `delta = 1.0`, `epsilon = 0.25`.
+//
+// `k1 = 1.2` and `b = 0.75` are the values the 2009 framework paper
+// § 3.2 names as the ones that work across collections.  The IDF is
+// the one that cannot go negative; see the module comment.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println(bm25params.idf_name(bm25params.defaults().idf))   // lucene
+// ```
+pub fn defaults() -> Bm25Params []
+    todo("bm25-nv.bm25params.defaults")
+
+// The default parameters for one variant, with that variant's own
+// published `delta`.
+//
+// `Bm25Okapi` answers `defaults()`.  `Bm25Plus` answers it with
+// `delta = 1.0`, the CIKM 2011 paper's recommendation.  `Bm25L`
+// answers it with `delta = 0.5`, the SIGIR 2011 paper's.  The two
+// deltas are different quantities, which is the whole reason this
+// call exists rather than a single constant.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println("${bm25params.defaults_for(Bm25L).delta}")        // 0.5
+// ```
+pub fn defaults_for(v: Bm25Variant) -> Bm25Params []
+    todo("bm25-nv.bm25params.defaults_for")
+
+// The parameters `rank_bm25`'s `BM25Okapi` uses, so that a port can
+// be checked against the numbers it is replacing.
+//
+// Okapi BM25 with the floored Robertson IDF, `k1 = 1.5`, `b = 0.75`
+// and `epsilon = 0.25` — `rank_bm25`'s constructor defaults, which
+// are not the same as this package's, and that difference is why the
+// call is spelled out rather than left for a reader to assemble.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println("${bm25params.rank_bm25_defaults().k1}")          // 1.5
+// ```
+pub fn rank_bm25_defaults() -> Bm25Params []
+    todo("bm25-nv.bm25params.rank_bm25_defaults")
+
+// The same parameters with a different variant.
+//
+// The `delta` is carried across unchanged, because this call cannot
+// know whether it was tuned or defaulted.  A caller switching variant
+// and wanting the new variant's published `delta` takes
+// `defaults_for` instead.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     let p = bm25params.with_variant(bm25params.defaults(), Bm25Plus)
+//     println(bm25params.variant_name(p.variant))               // bm25+
+// ```
+pub fn with_variant(p: Bm25Params, v: Bm25Variant) -> Bm25Params []
+    todo("bm25-nv.bm25params.with_variant")
+
+// The same parameters with a different inverse document frequency.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     let p = bm25params.with_idf(bm25params.defaults(), Bm25IdfRobertson)
+//     println(bm25params.idf_name(p.idf))                       // robertson
+// ```
+pub fn with_idf(p: Bm25Params, i: Bm25Idf) -> Bm25Params []
+    todo("bm25-nv.bm25params.with_idf")
+
+// The same parameters with a different term frequency saturation
+// constant.
+//
+// The value is not checked here; `check` is where a bad one is
+// reported, so that a program can build a parameter set from a
+// configuration file and validate it once.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println("${bm25params.with_k1(bm25params.defaults(), 2.0).k1}")   // 2.0
+// ```
+pub fn with_k1(p: Bm25Params, k1: Float) -> Bm25Params []
+    todo("bm25-nv.bm25params.with_k1")
+
+// The same parameters with a different length normalisation constant.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println("${bm25params.with_b(bm25params.defaults(), 0.0).b}")     // 0.0
+// ```
+pub fn with_b(p: Bm25Params, b: Float) -> Bm25Params []
+    todo("bm25-nv.bm25params.with_b")
+
+// The same parameters with a different `delta`.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     let p = bm25params.with_delta(bm25params.defaults_for(Bm25Plus), 1.5)
+//     println("${p.delta}")                                     // 1.5
+// ```
+pub fn with_delta(p: Bm25Params, delta: Float) -> Bm25Params []
+    todo("bm25-nv.bm25params.with_delta")
+
+// The same parameters with a different floor multiplier.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     let p = bm25params.with_epsilon(bm25params.rank_bm25_defaults(), 0.5)
+//     println("${p.epsilon}")                                   // 0.5
+// ```
+pub fn with_epsilon(p: Bm25Params, epsilon: Float) -> Bm25Params []
+    todo("bm25-nv.bm25params.with_epsilon")
+
+// Whether every number in the parameter set is inside the range its
+// formula is defined over, answering the parameters unchanged when it
+// is.
+//
+// `k1` must be at or above zero, `b` between zero and one inclusive,
+// `delta` at or above zero and `epsilon` at or above zero.  A value
+// outside its range is `Bm25ParamOutOfRange` naming the field and the
+// value.
+//
+// This is the call a program makes once, when it reads its
+// configuration, so that a `b` of `2.0` is a refusal at start-up
+// rather than a ranking that runs and means nothing.  No scoring
+// function calls it: checking four floats on every document of every
+// query is a cost paid a million times for a mistake made once.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     match bm25params.check(bm25params.with_b(bm25params.defaults(), 2.0))
+//         Ok(_)  => println("usable")
+//         Err(_) => println("b is a fraction of the length normalisation")
+// ```
+pub fn check(p: Bm25Params) -> Result<Bm25Params, bm25error.Bm25Error> []
+    todo("bm25-nv.bm25params.check")
+
+// The variant as a stable name: `"bm25"`, `"bm25+"`, `"bm25l"`.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println(bm25params.variant_name(Bm25Okapi))               // bm25
+// ```
+pub fn variant_name(v: Bm25Variant) -> Str []
+    todo("bm25-nv.bm25params.variant_name")
+
+// The variant a name denotes, or `None`.
+//
+// The names are the ones `variant_name` prints, so a configuration
+// key or a command-line flag round-trips through the pair.  An
+// unknown name is `None` rather than the default, because a
+// misspelled variant that silently became plain BM25 is a
+// configuration file that lies about what the program is doing.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     match bm25params.variant_named("bm25+")
+//         Some(_) => println("known")
+//         None    => println("not a variant this package has")
+// ```
+pub fn variant_named(name: Str) -> ?Bm25Variant []
+    todo("bm25-nv.bm25params.variant_named")
+
+// The inverse document frequency as a stable name: `"lucene"`,
+// `"robertson"`, `"floored"`.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     println(bm25params.idf_name(Bm25IdfFloored))              // floored
+// ```
+pub fn idf_name(i: Bm25Idf) -> Str []
+    todo("bm25-nv.bm25params.idf_name")
+
+// The inverse document frequency a name denotes, or `None`.
+//
+// ```novo
+// use bm25params
+//
+// fn main() [io]
+//     match bm25params.idf_named("robertson")
+//         Some(_) => println("known")
+//         None    => println("not an IDF this package has")
+// ```
+pub fn idf_named(name: Str) -> ?Bm25Idf []
+    todo("bm25-nv.bm25params.idf_named")
