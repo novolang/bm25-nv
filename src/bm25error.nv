@@ -68,6 +68,20 @@ pub enum Bm25Error
     // document index across a rebuild meets this.
     Bm25DocOutOfRange(doc: Int, count: Int)
 
+// `Bm25Error` is an `Error`, which is what lets
+// `Result<T, Bm25Error>` exist at all — `bm25index.build`,
+// `bm25params.check`, `bm25query.top_k_with` and `bm25score`'s
+// `term_score`, `score` and `score_with` are every signature in the
+// package that answers with one.
+impl Error for Bm25Error
+    // The one-line message: `bm25error.message`'s sentence, the
+    // refusal named together with the parameter, the two generations
+    // or the document index it is about.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("bm25-nv.Bm25Error.message")
+
 // The refusal as a sentence, ending without a full stop, suitable for
 // a log line or an error message the caller composes.
 //
