@@ -131,20 +131,10 @@ fn count_index(corpus: [[Str]], generation: Int) -> Bm25Index []
         list.push(post_start, list.len(post_term))
         var ordered = list.clone(doc)
         list.sort(ordered)
-        // `ordered` is sorted, so equal terms are neighbours: a run of
-        // them is one posting, and its length is the frequency.
-        var run_term = ""
-        var run_len = 0
-        for term in ordered
-            if run_len > 0 and term == run_term
-                run_len = run_len + 1
-            else
-                if run_len > 0
-                    add_posting(terms, run_term, run_len, var post_term, var post_freq, var doc_freq)
-                run_term = term
-                run_len = 1
-        if run_len > 0
-            add_posting(terms, run_term, run_len, var post_term, var post_freq, var doc_freq)
+        // `ordered` is sorted, so the groups come out in term order and
+        // a posting run keeps the vocabulary's order.
+        for run in list.group_by(ordered, t => t)
+            add_posting(terms, run.0, list.len(run.1), var post_term, var post_freq, var doc_freq)
     list.push(post_start, list.len(post_term))
     Bm25Index {
         terms: terms,
