@@ -204,7 +204,13 @@ pub struct Bm25Params
 //     println(bm25params.idf_name(bm25params.defaults().idf))   // lucene
 // ```
 pub fn defaults() -> Bm25Params []
-    todo("bm25-nv.bm25params.defaults")
+    Bm25Params {
+        variant: Bm25Okapi,
+        idf: Bm25IdfLucene,
+        k1: 1.2,
+        b: 0.75,
+        delta: 1.0,
+        epsilon: 0.25 }
 
 // The default parameters for one variant, with that variant's own
 // published `delta`.
@@ -222,7 +228,10 @@ pub fn defaults() -> Bm25Params []
 //     println("${bm25params.defaults_for(Bm25L).delta}")        // 0.5
 // ```
 pub fn defaults_for(v: Bm25Variant) -> Bm25Params []
-    todo("bm25-nv.bm25params.defaults_for")
+    match v
+        Bm25Okapi => defaults()
+        Bm25Plus  => with_delta(with_variant(defaults(), Bm25Plus), 1.0)
+        Bm25L     => with_delta(with_variant(defaults(), Bm25L), 0.5)
 
 // The parameters `rank_bm25`'s `BM25Okapi` uses, so that a port can
 // be checked against the numbers it is replacing.
@@ -239,7 +248,13 @@ pub fn defaults_for(v: Bm25Variant) -> Bm25Params []
 //     println("${bm25params.rank_bm25_defaults().k1}")          // 1.5
 // ```
 pub fn rank_bm25_defaults() -> Bm25Params []
-    todo("bm25-nv.bm25params.rank_bm25_defaults")
+    Bm25Params {
+        variant: Bm25Okapi,
+        idf: Bm25IdfFloored,
+        k1: 1.5,
+        b: 0.75,
+        delta: 1.0,
+        epsilon: 0.25 }
 
 // The same parameters with a different variant.
 //
@@ -256,7 +271,13 @@ pub fn rank_bm25_defaults() -> Bm25Params []
 //     println(bm25params.variant_name(p.variant))               // bm25+
 // ```
 pub fn with_variant(p: Bm25Params, v: Bm25Variant) -> Bm25Params []
-    todo("bm25-nv.bm25params.with_variant")
+    Bm25Params {
+        variant: v,
+        idf: p.idf,
+        k1: p.k1,
+        b: p.b,
+        delta: p.delta,
+        epsilon: p.epsilon }
 
 // The same parameters with a different inverse document frequency.
 //
@@ -268,7 +289,13 @@ pub fn with_variant(p: Bm25Params, v: Bm25Variant) -> Bm25Params []
 //     println(bm25params.idf_name(p.idf))                       // robertson
 // ```
 pub fn with_idf(p: Bm25Params, i: Bm25Idf) -> Bm25Params []
-    todo("bm25-nv.bm25params.with_idf")
+    Bm25Params {
+        variant: p.variant,
+        idf: i,
+        k1: p.k1,
+        b: p.b,
+        delta: p.delta,
+        epsilon: p.epsilon }
 
 // The same parameters with a different term frequency saturation
 // constant.
@@ -284,7 +311,13 @@ pub fn with_idf(p: Bm25Params, i: Bm25Idf) -> Bm25Params []
 //     println("${bm25params.with_k1(bm25params.defaults(), 2.0).k1}")   // 2.0
 // ```
 pub fn with_k1(p: Bm25Params, k1: Float) -> Bm25Params []
-    todo("bm25-nv.bm25params.with_k1")
+    Bm25Params {
+        variant: p.variant,
+        idf: p.idf,
+        k1: k1,
+        b: p.b,
+        delta: p.delta,
+        epsilon: p.epsilon }
 
 // The same parameters with a different length normalisation constant.
 //
@@ -295,7 +328,13 @@ pub fn with_k1(p: Bm25Params, k1: Float) -> Bm25Params []
 //     println("${bm25params.with_b(bm25params.defaults(), 0.0).b}")     // 0.0
 // ```
 pub fn with_b(p: Bm25Params, b: Float) -> Bm25Params []
-    todo("bm25-nv.bm25params.with_b")
+    Bm25Params {
+        variant: p.variant,
+        idf: p.idf,
+        k1: p.k1,
+        b: b,
+        delta: p.delta,
+        epsilon: p.epsilon }
 
 // The same parameters with a different `delta`.
 //
@@ -307,7 +346,13 @@ pub fn with_b(p: Bm25Params, b: Float) -> Bm25Params []
 //     println("${p.delta}")                                     // 1.5
 // ```
 pub fn with_delta(p: Bm25Params, delta: Float) -> Bm25Params []
-    todo("bm25-nv.bm25params.with_delta")
+    Bm25Params {
+        variant: p.variant,
+        idf: p.idf,
+        k1: p.k1,
+        b: p.b,
+        delta: delta,
+        epsilon: p.epsilon }
 
 // The same parameters with a different floor multiplier.
 //
@@ -319,7 +364,13 @@ pub fn with_delta(p: Bm25Params, delta: Float) -> Bm25Params []
 //     println("${p.epsilon}")                                   // 0.5
 // ```
 pub fn with_epsilon(p: Bm25Params, epsilon: Float) -> Bm25Params []
-    todo("bm25-nv.bm25params.with_epsilon")
+    Bm25Params {
+        variant: p.variant,
+        idf: p.idf,
+        k1: p.k1,
+        b: p.b,
+        delta: p.delta,
+        epsilon: epsilon }
 
 // Whether every number in the parameter set is inside the range its
 // formula is defined over, answering the parameters unchanged when it
@@ -345,7 +396,15 @@ pub fn with_epsilon(p: Bm25Params, epsilon: Float) -> Bm25Params []
 //         Err(_) => println("b is a fraction of the length normalisation")
 // ```
 pub fn check(p: Bm25Params) -> Result<Bm25Params, bm25error.Bm25Error> []
-    todo("bm25-nv.bm25params.check")
+    if p.k1 < 0.0
+        return Err(Bm25ParamOutOfRange("k1", p.k1))
+    if p.b < 0.0 or p.b > 1.0
+        return Err(Bm25ParamOutOfRange("b", p.b))
+    if p.delta < 0.0
+        return Err(Bm25ParamOutOfRange("delta", p.delta))
+    if p.epsilon < 0.0
+        return Err(Bm25ParamOutOfRange("epsilon", p.epsilon))
+    Ok(p)
 
 // The variant as a stable name: `"bm25"`, `"bm25+"`, `"bm25l"`.
 //
@@ -356,7 +415,10 @@ pub fn check(p: Bm25Params) -> Result<Bm25Params, bm25error.Bm25Error> []
 //     println(bm25params.variant_name(Bm25Okapi))               // bm25
 // ```
 pub fn variant_name(v: Bm25Variant) -> Str []
-    todo("bm25-nv.bm25params.variant_name")
+    match v
+        Bm25Okapi => "bm25"
+        Bm25Plus  => "bm25+"
+        Bm25L     => "bm25l"
 
 // The variant a name denotes, or `None`.
 //
@@ -375,7 +437,11 @@ pub fn variant_name(v: Bm25Variant) -> Str []
 //         None    => println("not a variant this package has")
 // ```
 pub fn variant_named(name: Str) -> ?Bm25Variant []
-    todo("bm25-nv.bm25params.variant_named")
+    match name
+        "bm25"  => Some(Bm25Okapi)
+        "bm25+" => Some(Bm25Plus)
+        "bm25l" => Some(Bm25L)
+        _       => None
 
 // The inverse document frequency as a stable name: `"lucene"`,
 // `"robertson"`, `"floored"`.
@@ -387,7 +453,10 @@ pub fn variant_named(name: Str) -> ?Bm25Variant []
 //     println(bm25params.idf_name(Bm25IdfFloored))              // floored
 // ```
 pub fn idf_name(i: Bm25Idf) -> Str []
-    todo("bm25-nv.bm25params.idf_name")
+    match i
+        Bm25IdfLucene    => "lucene"
+        Bm25IdfRobertson => "robertson"
+        Bm25IdfFloored   => "floored"
 
 // The inverse document frequency a name denotes, or `None`.
 //
@@ -400,4 +469,8 @@ pub fn idf_name(i: Bm25Idf) -> Str []
 //         None    => println("not an IDF this package has")
 // ```
 pub fn idf_named(name: Str) -> ?Bm25Idf []
-    todo("bm25-nv.bm25params.idf_named")
+    match name
+        "lucene"    => Some(Bm25IdfLucene)
+        "robertson" => Some(Bm25IdfRobertson)
+        "floored"   => Some(Bm25IdfFloored)
+        _           => None

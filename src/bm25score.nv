@@ -53,9 +53,98 @@
 // A caller that added a document rebuilds the table; there is no way
 // to forget and no way to find out late.
 
+use std.math
 use bm25error
 use bm25index
 use bm25params
+
+// The inverse document frequency of one term over a corpus of
+// `n_docs` documents of which `df` hold it.  The floored arm is the
+// Robertson formula; its floor belongs to the whole vocabulary and is
+// applied by the callers below, not here.
+fn raw_idf(n_docs: Int, df: Int, kind: bm25params.Bm25Idf) -> Float []
+    let n = df as Float
+    let total = n_docs as Float
+    let ratio = (total - n + 0.5) / (n + 0.5)
+    match kind
+        Bm25IdfLucene    => math.log(1.0 + ratio)
+        Bm25IdfRobertson => math.log(ratio)
+        Bm25IdfFloored   => math.log(ratio)
+
+// The value a floored IDF substitutes for a term whose own value came
+// out at or below zero: `epsilon` times the mean of the values that
+// came out positive, and zero for a corpus with no positive one.
+fn floor_of(values: [Float], epsilon: Float) -> Float []
+    var sum = 0.0
+    var count = 0
+    for value in values
+        if value > 0.0
+            sum = sum + value
+            count = count + 1
+    if count == 0
+        return 0.0
+    epsilon * sum / count as Float
+
+// A table's entries: one logarithm per vocabulary term, with the floor
+// applied across the whole list under `Bm25IdfFloored`.
+fn table_idfs(ix: bm25index.Bm25Index, p: bm25params.Bm25Params) -> [Float] []
+    let n_docs = bm25index.doc_count(ix)
+    var raw: [Float] = []
+    for term in bm25index.vocabulary(ix)
+        list.push(raw, raw_idf(n_docs, bm25index.doc_freq(ix, term), p.idf))
+    let kind = p.idf
+    match kind
+        Bm25IdfFloored =>
+            let floor = floor_of(raw, p.epsilon)
+            var out: [Float] = []
+            for it in raw
+                if it <= 0.0
+                    list.push(out, floor)
+                else
+                    list.push(out, it)
+            out
+        _              => raw
+
+// A table's term list is the index's sorted vocabulary, so a query
+// term's entry is found by binary search.
+fn index_of(terms: [Str], term: Str) -> ?Int []
+    var lo = 0
+    var hi = list.len(terms)
+    while lo < hi
+        let mid = lo + (hi - lo) / 2
+        if terms[mid] == term
+            return Some(mid)
+        elif terms[mid] < term
+            lo = mid + 1
+        else
+            hi = mid
+    None
+
+// What a term is worth in a document: its count divided by the length
+// normalisation, then saturated by the variant's formula.  A document
+// that does not hold the term is worth nothing, which is what stops
+// BM25+'s shift paying out for an absent term.
+fn saturation(p: bm25params.Bm25Params, tf: Int, dl: Int, avgdl: Float) -> Float []
+    if tf == 0
+        return 0.0
+    let c = tf as Float / (1.0 - p.b + p.b * dl as Float / avgdl)
+    let k1 = p.k1
+    let delta = p.delta
+    let variant = p.variant
+    match variant
+        Bm25Okapi => c * (k1 + 1.0) / (c + k1)
+        Bm25Plus  => c * (k1 + 1.0) / (c + k1) + delta
+        Bm25L     => (c + delta) * (k1 + 1.0) / (c + delta + k1)
+
+// What one term contributes to a document known to be inside the
+// corpus: the whole of the term score below the range check.
+fn term_of(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int, term: Str) -> Float []
+    let tf = bm25index.term_freq(ix, doc, term)
+    if tf == 0
+        return 0.0
+    let dl = bm25index.doc_len(ix, doc) ?? 0
+    let avgdl = bm25index.avg_doc_len(ix)
+    idf(ix, p, term) * saturation(p, tf, dl, avgdl)
 
 // The inverse document frequency of every term in a corpus, computed
 // once, with the parameters it was computed under and the generation
@@ -106,7 +195,11 @@ pub struct Bm25IdfTable
 //             println("${list.len(t.terms)}")                    // 3
 // ```
 pub fn idf_table(ix: bm25index.Bm25Index, p: bm25params.Bm25Params) -> Bm25IdfTable []
-    todo("bm25-nv.bm25score.idf_table")
+    Bm25IdfTable {
+        terms: bm25index.vocabulary(ix),
+        idf: table_idfs(ix, p),
+        params: p,
+        generation: bm25index.generation(ix) }
 
 // The index generation this table was built from.
 //
@@ -123,7 +216,7 @@ pub fn idf_table(ix: bm25index.Bm25Index, p: bm25params.Bm25Params) -> Bm25IdfTa
 //             println("${bm25score.table_generation(t)}")        // 0
 // ```
 pub fn table_generation(t: Bm25IdfTable) -> Int []
-    todo("bm25-nv.bm25score.table_generation")
+    t.generation
 
 // Whether a table may still be used with an index.
 //
@@ -146,7 +239,7 @@ pub fn table_generation(t: Bm25IdfTable) -> Int []
 //             println("${bm25score.table_is_current(t, ix2)}")   // false
 // ```
 pub fn table_is_current(t: Bm25IdfTable, ix: bm25index.Bm25Index) -> Bool []
-    todo("bm25-nv.bm25score.table_is_current")
+    table_generation(t) == bm25index.generation(ix)
 
 // The inverse document frequency of one term, under one parameter
 // set.
@@ -172,7 +265,18 @@ pub fn table_is_current(t: Bm25IdfTable, ix: bm25index.Bm25Index) -> Bool []
 //         Ok(ix) => println("${bm25score.idf(ix, bm25params.defaults(), "a")}")
 // ```
 pub fn idf(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, term: Str) -> Float []
-    todo("bm25-nv.bm25score.idf")
+    let n_docs = bm25index.doc_count(ix)
+    let value = raw_idf(n_docs, bm25index.doc_freq(ix, term), p.idf)
+    let kind = p.idf
+    match kind
+        Bm25IdfFloored =>
+            if value > 0.0
+                return value
+            var values: [Float] = []
+            for t in bm25index.vocabulary(ix)
+                list.push(values, raw_idf(n_docs, bm25index.doc_freq(ix, t), p.idf))
+            floor_of(values, p.epsilon)
+        _              => value
 
 // What one term contributes to one document's score.
 //
@@ -200,7 +304,10 @@ pub fn idf(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, term: Str) -> Floa
 // ```
 pub fn term_score(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int,
                   term: Str) -> Result<Float, bm25error.Bm25Error> []
-    todo("bm25-nv.bm25score.term_score")
+    let count = bm25index.doc_count(ix)
+    if doc < 0 or doc >= count
+        return Err(Bm25DocOutOfRange(doc, count))
+    Ok(term_of(ix, p, doc, term))
 
 // One document's score for a query, computing the inverse document
 // frequencies as it goes.
@@ -232,7 +339,13 @@ pub fn term_score(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int,
 // ```
 pub fn score(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int,
              query: [Str]) -> Result<Float, bm25error.Bm25Error> []
-    todo("bm25-nv.bm25score.score")
+    let count = bm25index.doc_count(ix)
+    if doc < 0 or doc >= count
+        return Err(Bm25DocOutOfRange(doc, count))
+    var total = 0.0
+    for term in query
+        total = total + term_of(ix, p, doc, term)
+    Ok(total)
 
 // One document's score for a query, reading the inverse document
 // frequencies off a table.
@@ -262,4 +375,17 @@ pub fn score(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, doc: Int,
 // ```
 pub fn score_with(t: Bm25IdfTable, ix: bm25index.Bm25Index, doc: Int,
                   query: [Str]) -> Result<Float, bm25error.Bm25Error> []
-    todo("bm25-nv.bm25score.score_with")
+    if not table_is_current(t, ix)
+        return Err(Bm25StaleIdfTable(table_generation(t), bm25index.generation(ix)))
+    let count = bm25index.doc_count(ix)
+    if doc < 0 or doc >= count
+        return Err(Bm25DocOutOfRange(doc, count))
+    let p = t.params
+    let dl = bm25index.doc_len(ix, doc) ?? 0
+    let avgdl = bm25index.avg_doc_len(ix)
+    var total = 0.0
+    for term in query
+        if let Some(at) = index_of(t.terms, term)
+            let tf = bm25index.term_freq(ix, doc, term)
+            total = total + t.idf[at] * saturation(p, tf, dl, avgdl)
+    Ok(total)

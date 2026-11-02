@@ -5,6 +5,91 @@ All notable changes to bm25-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-10-10
+
+**The implementation.**  Every body the interface release published as
+`todo()` is written, `novo test --isolate tests` is green over five
+suites and 27 tests, no run reports a leak, and the merged per-line
+coverage of `src/` is 340 of 341 instrumented lines — every line but
+the one the marker below excuses.
+
+### Added
+
+- `bm25index` — the corpus counted once: the document lengths, the
+  term frequencies, the document frequencies, the sorted vocabulary
+  and the total.  `add` and `add_all` answer a NEW index and advance
+  its generation by the number of documents added, so a table built
+  before an add is refused rather than trusted.
+- `bm25score` — the three saturations out of one shape: Okapi's, BM25+
+  adding `delta` outside the saturation, and BM25L adding it inside,
+  each written out in the module comment.  The IDF table carries the
+  vocabulary, the values, the parameters it was built from and the
+  generation it read.  Its three IDFs are the Lucene default, section
+  3.2's Robertson formula with its negative branch intact, and
+  `rank_bm25`'s floor over the values that came out positive.
+- `bm25query` — the scores, the ranking, the cut, the precomputed
+  table's two calls, the best hit and `unknown_terms`.  The ranking
+  applies `bm25hit.compare`'s total order in a merge sort written out
+  in the module.  The obvious spelling — `list.sort_by` with a key
+  that builds `(a.score, a.doc)` — is the shape the compiled leg
+  orders wrong, filed as
+  `codegen-llvm/list-sort-by-with-a-pair-valued-key-orders-wrong-on-the-compiled-leg`
+  and reproduced against 0.20.2 while this was written, so the
+  hand-written sort is the workaround; it also fixes the tie order the
+  standard sorts do not promise.
+- `bm25params` — the defaults, the two per-variant defaults,
+  `rank_bm25`'s own constructor defaults, the four `with_*` builders,
+  the four-field `check`, and the name round-trips a configuration
+  file needs.
+- `bm25error` — each refusal is a value with a stable code and one
+  sentence, built in one place so the free function and the `Error`
+  trait method cannot drift apart.
+- `tests/bm25_edge_tests.nv` — the refusals read back, every variant
+  and IDF name, the reads that answer zero rather than refuse, the
+  table's cut at a `k` of zero, and the deduplication of
+  `unknown_terms`.
+- `rank_bm25`'s own worked example reproduces exactly: under
+  `bm25params.rank_bm25_defaults()`, the second document of the
+  three-document corpus scores 0.93729472 and the other two score
+  zero.
+- The toolchain floor moves to 0.20.2, the compiler this release was
+  built, tested and measured against.
+
+### Changed
+
+- **Three `== false` comparisons in the oracle suites are spelled
+  `not`.**  The 0.20.2 linter raises `redundant-bool` on each and
+  suggests exactly that rewrite, which is the same predicate.  All
+  three are pre-existing — `tests/bm25index_tests.nv` and
+  `tests/bm25score_tests.nv` carry the same one and two at HEAD — and
+  the assertions' meanings are untouched.
+
+### Known
+
+- **A corpus of one or two documents leaves the floored IDF nothing
+  positive to average.**  Every Robertson IDF over such a corpus is
+  at or below zero, so `epsilon` times the mean of the positive ones
+  is a mean of no values and the substituted value is zero.  Measured:
+  over `[["a"]]` under `rank_bm25_defaults()`, `bm25score.idf` answers
+  0.0 and `bm25query.score_all` answers `[0.0]`, so such a corpus
+  ranks every query at zero.  A single document is degenerate for
+  BM25 whatever the IDF does, and the doc comment on
+  `Bm25IdfFloored` names the reading this follows.
+- **One line under `src/` is excused from the coverage measurement**:
+  the refusal arm of `bm25query`'s private `doc_score`.  The table it
+  is handed is built from the index it walks, so neither of
+  `bm25score.score_with`'s refusals can fire there, and the line
+  carries a `// cov: skip` marker with that reason.
+- **Three lint warnings stand in the interface suites.**  `novo.lint`
+  reports `redundant-bool` on three `== false` comparisons —
+  `tests/bm25index_tests.nv:67`, `tests/bm25score_tests.nv:217` and
+  `tests/bm25score_tests.nv:229` — each of which the linter would
+  rewrite as `not`.  They are the interface release's own, at the same
+  sites in the commit this release starts from, and the suites are the
+  published oracle, so they are left as they are rather than
+  respelled.  Every module under `src/` and the new suite lint with no
+  warnings.
+
 ## [0.0.1] — 2026-09-17
 
 **The interface, published before anyone implements it.** Every public

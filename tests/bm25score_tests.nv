@@ -1,8 +1,6 @@
 // bm25score_tests.nv — the published properties of the formula, and
 // the refusal that stops a stale table being used.
 //
-// RED ON PURPOSE.
-//
 // The normative sources are Robertson and Zaragoza, "The
 // Probabilistic Relevance Framework: BM25 and Beyond", Foundations
 // and Trends in Information Retrieval 3(4), 2009, § 3.2 for Okapi
@@ -216,7 +214,7 @@ fn test_a_table_built_before_an_add_is_refused_rather_than_used() [io]
         Ok(ix) =>
             let t = bm25score.idf_table(ix, bm25params.defaults())
             let ix2 = bm25index.add(ix, ["c", "d"])
-            test.assert(bm25score.table_is_current(t, ix2) == false)
+            test.assert(not bm25score.table_is_current(t, ix2))
 
     test.case("and using it is Bm25StaleIdfTable, not a wrong number")
     match bm25index.build([["a", "b"], ["b", "c"]])
@@ -228,7 +226,7 @@ fn test_a_table_built_before_an_add_is_refused_rather_than_used() [io]
                 Ok(_)  => test.fail("a table from before the add has every IDF wrong")
                 Err(e) =>
                     test.assert(bm25error.code(e) == "stale-idf-table")
-                    test.assert(bm25error.is_setup_fault(e) == false)
+                    test.assert(not bm25error.is_setup_fault(e))
 
     test.case("the table computed without one gives the same score")
     match bm25index.build([["a", "b"], ["b", "c"]])

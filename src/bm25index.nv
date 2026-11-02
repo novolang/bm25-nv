@@ -62,6 +62,113 @@
 
 use bm25error
 
+// The vocabulary is sorted, so a term's position in it is a binary
+// search rather than a walk.
+fn term_index(terms: [Str], term: Str) -> ?Int []
+    var lo = 0
+    var hi = list.len(terms)
+    while lo < hi
+        let mid = lo + (hi - lo) / 2
+        if terms[mid] == term
+            return Some(mid)
+        elif terms[mid] < term
+            lo = mid + 1
+        else
+            hi = mid
+    None
+
+// One posting: the term's place in the vocabulary and how many times
+// the document holds it.  The document count of the term goes up by one.
+fn add_posting(terms: [Str], term: Str, freq: Int, var post_term: [Int], var post_freq: [Int],
+               var doc_freq: [Int]) []
+    let at = term_index(terms, term) ?? 0
+    list.push(post_term, at)
+    list.push(post_freq, freq)
+    doc_freq[at] = doc_freq[at] + 1
+
+// A sorted run of terms collapses to one entry each, which is what
+// turns the whole corpus's terms into a vocabulary.
+fn distinct(sorted: [Str]) -> [Str] []
+    var out: [Str] = []
+    for term in sorted
+        if list.len(out) == 0 or out[list.len(out) - 1] != term
+            list.push(out, term)
+    out
+
+// One document's run of postings holds each term once, so the count
+// is found by walking that run for the vocabulary index.
+fn posting_freq(ix: Bm25Index, doc: Int, at: Int) -> Int []
+    var p = ix.post_start[doc]
+    while p < ix.post_start[doc + 1]
+        if ix.post_term[p] == at
+            return ix.post_freq[p]
+        p = p + 1
+    0
+
+// The counting core every entry point that produces an index shares:
+// one pass over the corpus for the lengths and the vocabulary, one for
+// the postings and the document frequencies.
+fn count_index(corpus: [[Str]], generation: Int) -> Bm25Index []
+    var lengths: [Int] = []
+    var total = 0
+    for doc in corpus
+        let n = list.len(doc)
+        list.push(lengths, n)
+        total = total + n
+    var every: [Str] = []
+    for doc in corpus
+        for term in doc
+            list.push(every, term)
+    list.sort(every)
+    let terms = distinct(every)
+    var doc_freq: [Int] = []
+    for term in terms
+        list.push(doc_freq, 0)
+    var post_start: [Int] = []
+    var post_term: [Int] = []
+    var post_freq: [Int] = []
+    for doc in corpus
+        list.push(post_start, list.len(post_term))
+        var ordered = list.clone(doc)
+        list.sort(ordered)
+        // `ordered` is sorted, so equal terms are neighbours: a run of
+        // them is one posting, and its length is the frequency.
+        var run_term = ""
+        var run_len = 0
+        for term in ordered
+            if run_len > 0 and term == run_term
+                run_len = run_len + 1
+            else
+                if run_len > 0
+                    add_posting(terms, run_term, run_len, var post_term, var post_freq, var doc_freq)
+                run_term = term
+                run_len = 1
+        if run_len > 0
+            add_posting(terms, run_term, run_len, var post_term, var post_freq, var doc_freq)
+    list.push(post_start, list.len(post_term))
+    Bm25Index {
+        terms: terms,
+        doc_freq: doc_freq,
+        lengths: lengths,
+        total_length: total,
+        post_start: post_start,
+        post_term: post_term,
+        post_freq: post_freq,
+        generation: generation }
+
+// The postings hold the counts and not the text, so a document is
+// spelled out again from its run by repeating each term its frequency.
+fn corpus_of(ix: Bm25Index) -> [[Str]] []
+    var docs: [[Str]] = []
+    for d in 0..list.len(ix.lengths)
+        var doc: [Str] = []
+        for p in ix.post_start[d]..ix.post_start[d + 1]
+            let term = ix.terms[ix.post_term[p]]
+            for _ in 0..ix.post_freq[p]
+                list.push(doc, term)
+        list.push(docs, doc)
+    docs
+
 // A tokenised corpus with everything BM25 reads off it counted once.
 //
 // The fields are the counted tables.  They are public because a value
@@ -130,7 +237,9 @@ pub struct Bm25Index
 //         Ok(ix) => println("${bm25index.avg_doc_len(ix)}")      // 5.0
 // ```
 pub fn build(corpus: [[Str]]) -> Result<Bm25Index, bm25error.Bm25Error> []
-    todo("bm25-nv.bm25index.build")
+    if list.len(corpus) == 0
+        return Err(Bm25EmptyCorpus)
+    Ok(count_index(corpus, 0))
 
 // The index with one more document, as a new value.
 //
@@ -153,7 +262,9 @@ pub fn build(corpus: [[Str]]) -> Result<Bm25Index, bm25error.Bm25Error> []
 //             println("${bm25index.doc_count(ix2)} ${bm25index.generation(ix2)}")
 // ```
 pub fn add(ix: Bm25Index, doc: [Str]) -> Bm25Index []
-    todo("bm25-nv.bm25index.add")
+    var corpus = corpus_of(ix)
+    list.push(corpus, list.clone(doc))
+    count_index(corpus, ix.generation + 1)
 
 // The index with several more documents, as a new value.
 //
@@ -175,7 +286,10 @@ pub fn add(ix: Bm25Index, doc: [Str]) -> Bm25Index []
 //             println("${bm25index.doc_count(ix2)}")             // 3
 // ```
 pub fn add_all(ix: Bm25Index, docs: [[Str]]) -> Bm25Index []
-    todo("bm25-nv.bm25index.add_all")
+    var corpus = corpus_of(ix)
+    for doc in docs
+        list.push(corpus, list.clone(doc))
+    count_index(corpus, ix.generation + list.len(docs))
 
 // How many documents the index holds.
 //
@@ -191,7 +305,7 @@ pub fn add_all(ix: Bm25Index, docs: [[Str]]) -> Bm25Index []
 //         Ok(ix) => println("${bm25index.doc_count(ix)}")        // 3
 // ```
 pub fn doc_count(ix: Bm25Index) -> Int []
-    todo("bm25-nv.bm25index.doc_count")
+    list.len(ix.lengths)
 
 // How many terms a document holds, counting repeats, or `None` when
 // the document index is out of range.
@@ -212,7 +326,9 @@ pub fn doc_count(ix: Bm25Index) -> Int []
 //                 None    => println("no such document")
 // ```
 pub fn doc_len(ix: Bm25Index, doc: Int) -> ?Int []
-    todo("bm25-nv.bm25index.doc_len")
+    if doc < 0 or doc >= list.len(ix.lengths)
+        return None
+    Some(ix.lengths[doc])
 
 // The average number of terms per document.
 //
@@ -230,7 +346,7 @@ pub fn doc_len(ix: Bm25Index, doc: Int) -> ?Int []
 //         Ok(ix) => println("${bm25index.avg_doc_len(ix)}")      // 3.0
 // ```
 pub fn avg_doc_len(ix: Bm25Index) -> Float []
-    todo("bm25-nv.bm25index.avg_doc_len")
+    ix.total_length as Float / list.len(ix.lengths) as Float
 
 // How many times a term occurs in a document.
 //
@@ -248,7 +364,11 @@ pub fn avg_doc_len(ix: Bm25Index) -> Float []
 //         Ok(ix) => println("${bm25index.term_freq(ix, 0, "a")}")  // 2
 // ```
 pub fn term_freq(ix: Bm25Index, doc: Int, term: Str) -> Int []
-    todo("bm25-nv.bm25index.term_freq")
+    if doc < 0 or doc >= list.len(ix.lengths)
+        return 0
+    match term_index(ix.terms, term)
+        None     => 0
+        Some(at) => posting_freq(ix, doc, at)
 
 // How many documents contain a term at least once.
 //
@@ -265,7 +385,9 @@ pub fn term_freq(ix: Bm25Index, doc: Int, term: Str) -> Int []
 //         Ok(ix) => println("${bm25index.doc_freq(ix, "b")}")    // 2
 // ```
 pub fn doc_freq(ix: Bm25Index, term: Str) -> Int []
-    todo("bm25-nv.bm25index.doc_freq")
+    match term_index(ix.terms, term)
+        None     => 0
+        Some(at) => ix.doc_freq[at]
 
 // Whether any document contains a term.
 //
@@ -281,7 +403,7 @@ pub fn doc_freq(ix: Bm25Index, term: Str) -> Int []
 //         Ok(ix) => println("${bm25index.contains_term(ix, "z")}")   // false
 // ```
 pub fn contains_term(ix: Bm25Index, term: Str) -> Bool []
-    todo("bm25-nv.bm25index.contains_term")
+    doc_freq(ix, term) > 0
 
 // Every distinct term in the corpus, in sorted order.
 //
@@ -298,7 +420,7 @@ pub fn contains_term(ix: Bm25Index, term: Str) -> Bool []
 //         Ok(ix) => println("${list.len(bm25index.vocabulary(ix))}")  // 2
 // ```
 pub fn vocabulary(ix: Bm25Index) -> [Str] []
-    todo("bm25-nv.bm25index.vocabulary")
+    list.clone(ix.terms)
 
 // How many term occurrences the whole corpus holds, counting repeats.
 //
@@ -315,7 +437,7 @@ pub fn vocabulary(ix: Bm25Index) -> [Str] []
 //         Ok(ix) => println("${bm25index.total_terms(ix)}")      // 3
 // ```
 pub fn total_terms(ix: Bm25Index) -> Int []
-    todo("bm25-nv.bm25index.total_terms")
+    ix.total_length
 
 // How many times this index has been added to.
 //
@@ -334,4 +456,4 @@ pub fn total_terms(ix: Bm25Index) -> Int []
 //         Ok(ix) => println("${bm25index.generation(ix)}")       // 0
 // ```
 pub fn generation(ix: Bm25Index) -> Int []
-    todo("bm25-nv.bm25index.generation")
+    ix.generation

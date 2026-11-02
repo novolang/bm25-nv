@@ -12,12 +12,6 @@ novo-lang. The reference implementations are the Python package
 [`rank_bm25`](https://github.com/dorianbrown/rank_bm25) and
 [Lucene's `BM25Similarity`](https://lucene.apache.org/core/9_0_0/core/org/apache/lucene/search/similarities/BM25Similarity.html).
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release.
-
 ## What BM25 is
 
 A **term** is one unit of text, already split out: a word, a stem, a
@@ -107,10 +101,10 @@ fn main() [io]
                 println("document ${h.doc} scored ${h.score}")
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: bm25-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`. The five suites
+under `tests/` are the specification: `novo test --isolate tests` runs
+them all, and `novo test src/<module>.nv` runs the examples in one
+module's doc comments.
 
 ## What the package contains
 
@@ -273,6 +267,7 @@ novo test tests/bm25index_tests.nv   # the counts, and what an add moves
 novo test tests/bm25score_tests.nv   # the papers' properties, and the stale table
 novo test tests/bm25query_tests.nv   # rank_bm25's worked example, and the total order
 novo test tests/bm25cover_tests.nv   # the parameters, the check, and the hit order
+novo test tests/bm25_edge_tests.nv   # the refusals, the names, and the degenerate corpora
 ```
 
 The normative worked example is the one on `rank_bm25`'s front page:
@@ -303,30 +298,12 @@ with both generations named, that equal scores come out in document
 index order, and that a parameter outside its range is reported by
 `bm25params.check` rather than by a ranking that runs.
 
-The tests compile today and fail at run, each on the
-`not implemented: bm25-nv.<module>.<fn>` panic that is its body. That
-is the expected state of an interface release. They turn green one at
-a time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `bm25error.Bm25Error` and the other public types | the types are declared |
-| `bm25error.message`, `.code`, `.is_setup_fault` | no |
-| `bm25params.defaults`, `.defaults_for`, `.rank_bm25_defaults` | no |
-| `bm25params.with_variant`, `.with_idf`, `.with_k1`, `.with_b` | no |
-| `bm25params.with_delta`, `.with_epsilon`, `.check` | no |
-| `bm25params.variant_name`, `.variant_named`, `.idf_name`, `.idf_named` | no |
-| `bm25index.build`, `.add`, `.add_all` | no |
-| `bm25index.doc_count`, `.doc_len`, `.avg_doc_len`, `.total_terms` | no |
-| `bm25index.term_freq`, `.doc_freq`, `.contains_term`, `.vocabulary` | no |
-| `bm25index.generation` | no |
-| `bm25score.idf_table`, `.table_generation`, `.table_is_current` | no |
-| `bm25score.idf`, `.term_score`, `.score`, `.score_with` | no |
-| `bm25hit.hit`, `.compare`, `.rank_of` | no |
-| `bm25query.score_all`, `.rank`, `.top_k`, `.top_k_with` | no |
-| `bm25query.best`, `.unknown_terms` | no |
+The edge suite pins the corners the other four leave: every refusal
+read back as a sentence with a stable code, every variant and IDF name
+a configuration file round-trips, the reads that answer zero rather
+than refuse, the precomputed table's cut at a `k` of zero, and the
+corpora small enough that the floored IDF has no positive value to
+average.
 
 ## Licence
 

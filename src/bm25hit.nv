@@ -69,7 +69,9 @@ pub struct Bm25Hit
 //     println("${bm25hit.hit(1, 2.5).doc}")            // 1
 // ```
 pub fn hit(doc: Int, score: Float) -> Bm25Hit []
-    todo("bm25-nv.bm25hit.hit")
+    Bm25Hit {
+        doc: doc,
+        score: score }
 
 // Order two hits for a ranking: negative when `a` ranks first, zero
 // when they are the same hit, positive when `b` ranks first.
@@ -88,7 +90,15 @@ pub fn hit(doc: Int, score: Float) -> Bm25Hit []
 //     println("${bm25hit.compare(bm25hit.hit(0, 1.0), bm25hit.hit(1, 1.0))}")
 // ```
 pub fn compare(a: Bm25Hit, b: Bm25Hit) -> Int []
-    todo("bm25-nv.bm25hit.compare")
+    if a.score > b.score
+        return -1
+    if a.score < b.score
+        return 1
+    if a.doc < b.doc
+        return -1
+    if a.doc > b.doc
+        return 1
+    0
 
 // Where a document appears in a ranked list, counting from zero, or
 // `None` when the list does not hold it.
@@ -109,4 +119,9 @@ pub fn compare(a: Bm25Hit, b: Bm25Hit) -> Int []
 //         None    => println("not in the list")
 // ```
 pub fn rank_of(hits: [Bm25Hit], doc: Int) -> ?Int []
-    todo("bm25-nv.bm25hit.rank_of")
+    var i = 0
+    while i < list.len(hits)
+        if hits[i].doc == doc
+            return Some(i)
+        i = i + 1
+    None

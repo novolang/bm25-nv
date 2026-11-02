@@ -1,15 +1,10 @@
 [package]
 name        = "bm25-nv"
-version     = "0.0.1"
+version     = "0.1.0"
 description = "Okapi BM25 ranking over a tokenised corpus the caller supplies: the index is a value holding every document length and term frequency, BM25, BM25+ and BM25L are three settings of one parameters value, the IDF formula is chosen rather than defaulted so that a common term cannot rank a document that contains it below one that does not, every `add` answers a new index whose generation refuses a precomputed IDF table made before it, and a ranking is a total order over score and document index."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+stability   = "experimental"
 
 # `core`.  Every row is `[]`.  The corpus arrives already tokenised,
 # as a list of lists of terms the caller holds, and every query is an
@@ -31,7 +26,7 @@ category    = "text"
 tags        = ["bm25", "okapi-bm25", "bm25-plus", "bm25l", "ranking", "information-retrieval", "search", "tf-idf", "text"]
 repository  = "https://github.com/novolang/bm25-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.9.0"
+novo        = ">= 0.20.2"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.

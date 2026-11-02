@@ -1,9 +1,6 @@
 // bm25index_tests.nv — the five numbers BM25 reads off a corpus, and
 // what an `add` does to all of them.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// bm25-nv.<module>.<fn>`.
-//
 // The corpus is `rank_bm25`'s own README example, split on spaces
 // exactly as its `tokenized_corpus` line splits it, so the counts
 // asserted here are the counts the reference implementation holds.
@@ -67,7 +64,7 @@ fn test_term_and_document_frequencies_are_what_the_formulae_read() [io]
             test.assert(bm25index.doc_freq(ix, "a") == 2)
             test.assert(bm25index.doc_freq(ix, "z") == 0)
             test.assert(bm25index.contains_term(ix, "a"))
-            test.assert(bm25index.contains_term(ix, "z") == false)
+            test.assert(not bm25index.contains_term(ix, "z"))
 
     test.case("terms are compared as exact strings — no folding happens here")
     match bm25index.build([["London"]])

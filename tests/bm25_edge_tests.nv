@@ -1,0 +1,135 @@
+// bm25_edge_tests.nv — the corners the other four suites leave: the
+// refusals read back as sentences, every name a configuration file
+// uses, the reads that answer zero rather than refuse, and the small
+// corpora where a formula's degenerate branch is the whole answer.
+//
+// The other suites pin one worked example per function.  These pin the
+// places where an answer changes shape, which is where an
+// implementation that only satisfied the examples would be wrong.
+
+use std.test
+use bm25error
+use bm25index
+use bm25params
+use bm25query
+use bm25score
+
+@test
+fn test_every_refusal_reads_back_as_a_sentence_and_a_code() [io]
+    test.case("the empty corpus refusal has a sentence and a code")
+    test.assert(str.len(bm25error.message(Bm25EmptyCorpus)) > 0)
+    test.assert(bm25error.code(Bm25EmptyCorpus) == "empty-corpus")
+
+    test.case("a value answers the same sentence the free function does")
+    let e = Bm25EmptyCorpus
+    test.assert(str.len(e.message()) > 0)
+    test.assert(e.message() == bm25error.message(e))
+
+    test.case("a document outside the corpus is a call fault, not a setup one")
+    match bm25index.build([["a"], ["b"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            match bm25score.term_score(ix, bm25params.defaults(), 9, "a")
+                Ok(_)  => test.fail("there is no document 9 in a corpus of two")
+                Err(e) =>
+                    test.assert(bm25error.code(e) == "doc-out-of-range")
+                    test.assert(not bm25error.is_setup_fault(e))
+                    test.assert(str.len(bm25error.message(e)) > 0)
+
+@test
+fn test_a_term_frequency_outside_the_index_answers_zero() [io]
+    // A count is read for anything a caller can spell, so a document
+    // that is not in the corpus and a term that is not in the
+    // vocabulary both read as zero rather than refusing.
+    test.case("a document index outside the corpus reads as no occurrences")
+    match bm25index.build([["a", "a"], ["b"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) =>
+            test.assert(bm25index.term_freq(ix, -1, "a") == 0)
+            test.assert(bm25index.term_freq(ix, 9, "a") == 0)
+
+    test.case("a term no document holds reads as no occurrences")
+    match bm25index.build([["a", "a"], ["b"]])
+        Err(_) => test.fail("two non-empty documents index")
+        Ok(ix) => test.assert(bm25index.term_freq(ix, 0, "zebra") == 0)
+
+@test
+fn test_every_name_a_configuration_might_use_reads_back() [io]
+    test.case("all three variant names")
+    match bm25params.variant_named("bm25")
+        None    => test.fail("bm25 is one of the three names")
+        Some(v) => test.assert(bm25params.variant_name(v) == "bm25")
+    match bm25params.variant_named("bm25l")
+        None    => test.fail("bm25l is one of the three names")
+        Some(v) => test.assert(bm25params.variant_name(v) == "bm25l")
+
+    test.case("all three IDF names")
+    match bm25params.idf_named("lucene")
+        None    => test.fail("lucene is one of the three names")
+        Some(i) => test.assert(bm25params.idf_name(i) == "lucene")
+    match bm25params.idf_named("floored")
+        None    => test.fail("floored is one of the three names")
+        Some(i) => test.assert(bm25params.idf_name(i) == "floored")
+
+    test.case("the Okapi variant's defaults are the package defaults")
+    let okapi = bm25params.defaults_for(Bm25Okapi)
+    let d = bm25params.defaults()
+    test.assert(bm25params.variant_name(okapi.variant) == "bm25")
+    test.assert(okapi.k1 == d.k1)
+    test.assert(okapi.b == d.b)
+    test.assert(okapi.delta == d.delta)
+
+@test
+fn test_a_table_cuts_at_zero_and_still_refuses_a_document_it_lacks() [io]
+    let corpus = [["a", "b"], ["b", "c"], ["c", "d"]]
+
+    test.case("a k of zero is an empty answer, not a refusal")
+    match bm25index.build(corpus)
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            match bm25query.top_k_with(t, ix, ["c"], 0)
+                Err(_)   => test.fail("a current table and a k of zero are both legal")
+                Ok(hits) => test.assert(list.len(hits) == 0)
+
+    test.case("a document outside the corpus is refused by the table's scorer")
+    match bm25index.build(corpus)
+        Err(_) => test.fail("three non-empty documents index")
+        Ok(ix) =>
+            let t = bm25score.idf_table(ix, bm25params.defaults())
+            match bm25score.score_with(t, ix, 7, ["c"])
+                Ok(_)  => test.fail("there is no document 7 in a corpus of three")
+                Err(e) => test.assert(bm25error.code(e) == "doc-out-of-range")
+
+@test
+fn test_the_floored_idf_keeps_a_positive_value_and_has_none_to_floor_with() [io]
+    // `rank_bm25`'s floor is `epsilon` times the mean of the positive
+    // IDFs.  A corpus whose every IDF came out at or below zero leaves
+    // it with no positive one to average, and the substituted value is
+    // then zero rather than the mean of an empty list.
+    let f = bm25params.rank_bm25_defaults()
+
+    test.case("a term whose own value is positive keeps it")
+    match bm25index.build([["a", "z"], ["b", "y"], ["c", "x"], ["d", "w"]])
+        Err(_) => test.fail("four non-empty documents index")
+        Ok(ix) => test.assert(bm25score.idf(ix, f, "a") > 0.0)
+
+    test.case("a corpus of one document has no positive IDF to floor with")
+    match bm25index.build([["a"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            test.assert(bm25score.idf(ix, f, "a") == 0.0)
+            let s = bm25query.score_all(ix, f, ["a"])
+            test.assert(s[0] == 0.0)
+
+@test
+fn test_an_unknown_term_repeated_in_the_query_is_reported_once() [io]
+    // The order is the query's, so a caller showing a user what was
+    // not searched shows it in the order they typed it.
+    match bm25index.build([["windy", "london"]])
+        Err(_) => test.fail("one non-empty document indexes")
+        Ok(ix) =>
+            let u = bm25query.unknown_terms(ix, ["zebra", "zebra", "quasar"])
+            test.assert(list.len(u) == 2)
+            test.assert(u[0] == "zebra")
+            test.assert(u[1] == "quasar")

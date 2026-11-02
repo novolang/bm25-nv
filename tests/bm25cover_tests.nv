@@ -2,8 +2,6 @@
 // parameters value a configuration file round-trips through, the
 // start-up check, the hit value and its order, and the precomputed
 // top-k.
-//
-// RED ON PURPOSE.
 
 use std.test
 use bm25error

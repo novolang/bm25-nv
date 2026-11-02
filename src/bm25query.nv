@@ -46,6 +46,52 @@ use bm25index
 use bm25params
 use bm25score
 
+// Whether a term is already in the list being built, which is how
+// `unknown_terms` keeps the query's order with each term once.
+fn has_str(xs: [Str], s: Str) -> Bool []
+    for x in xs
+        if x == s
+            return true
+    false
+
+// The merge two sorted runs of hits into one: the lower of the two
+// heads first, which is `bm25hit.compare`'s order.
+fn merge_hits(a: [bm25hit.Bm25Hit], b: [bm25hit.Bm25Hit]) -> [bm25hit.Bm25Hit] []
+    var out: [bm25hit.Bm25Hit] = []
+    var i = 0
+    var j = 0
+    while i < list.len(a) and j < list.len(b)
+        if bm25hit.compare(a[i], b[j]) <= 0
+            list.push(out, a[i])
+            i = i + 1
+        else
+            list.push(out, b[j])
+            j = j + 1
+    list.append(out, list.drop(a, i))
+    list.append(out, list.drop(b, j))
+    out
+
+// A stable merge sort by `bm25hit.compare`.  The order is part of the
+// published answer, ties included, so it is written out rather than
+// given to a key-based sort whose tie order is unspecified.
+fn sort_hits(xs: [bm25hit.Bm25Hit]) -> [bm25hit.Bm25Hit] []
+    if list.len(xs) < 2
+        return list.clone(xs)
+    let mid = list.len(xs) / 2
+    let left = sort_hits(list.slice(xs, 0, mid))
+    let right = sort_hits(list.slice(xs, mid, list.len(xs)))
+    merge_hits(left, right)
+
+// One document's score under a table built from the same index.  Both
+// of `score_with`'s refusals are impossible here, because the caller
+// built the table from this index and walks its documents; zero is the
+// score a document that matches nothing would have got anyway.
+fn doc_score(t: bm25score.Bm25IdfTable, ix: bm25index.Bm25Index, doc: Int, query: [Str]) -> Float []
+    match bm25score.score_with(t, ix, doc, query)
+        Ok(s)  => s
+        // cov: skip — the table was built from this index and the caller walks its documents, so this refusal cannot fire
+        Err(_) => 0.0
+
 // Every document's score for a query, in document index order.
 //
 // The list is `bm25index.doc_count` long and position `d` is
@@ -65,7 +111,14 @@ use bm25score
 //             println("${list.len(s)}")                          // 2
 // ```
 pub fn score_all(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> [Float] []
-    todo("bm25-nv.bm25query.score_all")
+    let t = bm25score.idf_table(ix, p)
+    var out: [Float] = []
+    let count = bm25index.doc_count(ix)
+    var d = 0
+    while d < count
+        list.push(out, doc_score(t, ix, d, query))
+        d = d + 1
+    out
 
 // Every document, ranked.
 //
@@ -88,7 +141,14 @@ pub fn score_all(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]
 //             println("${hits[0].doc}")                          // 1
 // ```
 pub fn rank(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> [bm25hit.Bm25Hit] []
-    todo("bm25-nv.bm25query.rank")
+    let t = bm25score.idf_table(ix, p)
+    var hits: [bm25hit.Bm25Hit] = []
+    let count = bm25index.doc_count(ix)
+    var d = 0
+    while d < count
+        list.push(hits, bm25hit.hit(d, doc_score(t, ix, d, query)))
+        d = d + 1
+    sort_hits(hits)
 
 // The `k` highest-ranked documents.
 //
@@ -113,7 +173,10 @@ pub fn rank(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> 
 // ```
 pub fn top_k(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str],
              k: Int) -> [bm25hit.Bm25Hit] []
-    todo("bm25-nv.bm25query.top_k")
+    if k <= 0
+        return []
+    let hits = rank(ix, p, query)
+    list.take(hits, k)
 
 // The `k` highest-ranked documents, reading the inverse document
 // frequencies off a table.
@@ -143,7 +206,19 @@ pub fn top_k(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str],
 // ```
 pub fn top_k_with(t: bm25score.Bm25IdfTable, ix: bm25index.Bm25Index, query: [Str],
                   k: Int) -> Result<[bm25hit.Bm25Hit], bm25error.Bm25Error> []
-    todo("bm25-nv.bm25query.top_k_with")
+    var hits: [bm25hit.Bm25Hit] = []
+    let count = bm25index.doc_count(ix)
+    var d = 0
+    while d < count
+        match bm25score.score_with(t, ix, d, query)
+            Ok(s)  => list.push(hits, bm25hit.hit(d, s))
+            Err(e) =>
+                return Err(e)
+        d = d + 1
+    if k <= 0
+        return Ok([])
+    let ranked = sort_hits(hits)
+    Ok(list.take(ranked, k))
 
 // The single highest-ranked document, or `None` when the corpus is
 // empty.
@@ -168,7 +243,8 @@ pub fn top_k_with(t: bm25score.Bm25IdfTable, ix: bm25index.Bm25Index, query: [St
 //                 None    => println("nothing to rank")
 // ```
 pub fn best(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> ?bm25hit.Bm25Hit []
-    todo("bm25-nv.bm25query.best")
+    let hits = rank(ix, p, query)
+    list.first(hits)
 
 // The query's terms that no document in the corpus contains, in the
 // order they appear in the query, each once.
@@ -196,4 +272,8 @@ pub fn best(ix: bm25index.Bm25Index, p: bm25params.Bm25Params, query: [Str]) -> 
 //             println("${list.len(u)}")                          // 2
 // ```
 pub fn unknown_terms(ix: bm25index.Bm25Index, query: [Str]) -> [Str] []
-    todo("bm25-nv.bm25query.unknown_terms")
+    var out: [Str] = []
+    for term in query
+        if bm25index.doc_freq(ix, term) == 0 and not has_str(out, term)
+            list.push(out, term)
+    out

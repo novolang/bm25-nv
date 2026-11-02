@@ -1,8 +1,6 @@
 // bm25query_tests.nv — `rank_bm25`'s own worked example, and the
 // total order the whole ranking rests on.
 //
-// RED ON PURPOSE.
-//
 // The vector is the one on `rank_bm25`'s front page: the three
 // documents "Hello there good man!", "It is quite windy in London"
 // and "How is the weather today?", each split on spaces, the query
