@@ -26,7 +26,7 @@ category    = "text"
 tags        = ["bm25", "okapi-bm25", "bm25-plus", "bm25l", "ranking", "information-retrieval", "search", "tf-idf", "text"]
 repository  = "https://github.com/novolang/bm25-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.20.2"
+novo        = ">= 0.23.0"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.

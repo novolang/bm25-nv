@@ -90,6 +90,8 @@ the one the marker below excuses.
   respelled.  Every module under `src/` and the new suite lint with no
   warnings.
 
+This release requires novo 0.23.0 or later.
+
 ## [0.0.1] — 2026-09-17
 
 **The interface, published before anyone implements it.** Every public
